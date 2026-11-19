@@ -1,17 +1,17 @@
 import sqlite3
 import uuid
 from contextlib import asynccontextmanager
-from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi import FastAPI, HTTPException, Query, status
 
 from app.config import Settings
 from app.database import connect, fts_available, initialize
-from app.inference import InferenceUnavailable, create_plan
+from app.inference import InferenceUnavailable, create_plan, generate_project_files
 from app.schemas import (
-    MemoryCreate, MemoryOut, PlanRequest, PlanResponse, ProjectCreate, ProjectOut,
+    GenerateRequest, GenerateResponse, MemoryCreate, MemoryOut, PlanRequest,
+    PlanResponse, ProjectCreate, ProjectOut,
 )
-from app.workspaces import create_workspace, make_slug
+from app.workspaces import create_workspace, make_slug, write_generated_files
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -25,7 +25,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     application = FastAPI(
         title="Ia-localfix API",
-        version="0.1.0",
+        version="0.2.0",
         description="Local-first AI software engineering control plane.",
         lifespan=lifespan,
     )
@@ -54,9 +54,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             workspace = create_workspace(config.workspace_root, slug)
         except FileExistsError as exc:
-            raise HTTPException(status_code=409, detail="A project with this name already exists.") from exc
-        except OSError as exc:
-            raise HTTPException(status_code=400, detail="Could not create project workspace.") from exc
+            raise HTTPException(
+                status_code=409, detail="A project with this name already exists."
+            ) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail="Could not create a safe project workspace."
+            ) from exc
 
         try:
             with connect(config.database_path) as db:
@@ -141,6 +145,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except InferenceUnavailable as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return {"model": config.ollama_model, "plan": result}
+
+    @application.post("/v1/agent/generate", response_model=GenerateResponse)
+    async def generate(payload: GenerateRequest):
+        with connect(config.database_path) as db:
+            project = db.execute(
+                "SELECT id, slug FROM projects WHERE id = ?", (payload.project_id,)
+            ).fetchone()
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found.")
+        try:
+            generated = await generate_project_files(
+                config.ollama_base_url, config.ollama_model, payload.request
+            )
+            written = write_generated_files(
+                config.workspace_root, project["slug"], generated
+            )
+        except InferenceUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except FileExistsError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {
+            "model": config.ollama_model,
+            "project_id": payload.project_id,
+            "files": written,
+        }
 
     return application
 

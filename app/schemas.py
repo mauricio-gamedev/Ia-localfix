@@ -32,3 +32,19 @@ class PlanRequest(BaseModel):
 class PlanResponse(BaseModel):
     model: str
     plan: str
+
+
+class GenerateRequest(BaseModel):
+    request: str = Field(min_length=5, max_length=12_000)
+    project_id: str
+
+
+class GeneratedFile(BaseModel):
+    path: str
+    size_bytes: int
+
+
+class GenerateResponse(BaseModel):
+    model: str
+    project_id: str
+    files: list[GeneratedFile]

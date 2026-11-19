@@ -69,3 +69,57 @@ def test_plan_returns_service_unavailable_without_runtime(tmp_path):
             json={"request": "Create a small Android application"},
         )
     assert response.status_code == 503
+
+
+def test_generate_writes_files_only_inside_workspace(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_generate(*_args):
+        return [{"path": "src/main.py", "content": "print('hello')\n"}]
+
+    monkeypatch.setattr(app.main, "generate_project_files", fake_generate)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Generator Test"}).json()
+        response = client.post(
+            "/v1/agent/generate",
+            json={"project_id": project["id"], "request": "Create a tiny Python app"},
+        )
+    assert response.status_code == 200
+    assert response.json()["files"][0]["path"] == "src/main.py"
+    assert (tmp_path / "workspaces" / "generator-test" / "src" / "main.py").read_text() == "print('hello')\n"
+
+
+def test_generate_rejects_path_traversal_and_writes_nothing(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_generate(*_args):
+        return [{"path": "../outside.txt", "content": "unsafe"}]
+
+    monkeypatch.setattr(app.main, "generate_project_files", fake_generate)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Traversal Test"}).json()
+        response = client.post(
+            "/v1/agent/generate",
+            json={"project_id": project["id"], "request": "Create a tiny Python app"},
+        )
+    assert response.status_code == 422
+    assert not (tmp_path / "workspaces" / "outside.txt").exists()
+
+
+def test_generate_never_overwrites_existing_file(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_generate(*_args):
+        return [{"path": "README.md", "content": "replace"}]
+
+    monkeypatch.setattr(app.main, "generate_project_files", fake_generate)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "No Overwrite"}).json()
+        target = tmp_path / "workspaces" / "no-overwrite" / "README.md"
+        target.write_text("original")
+        response = client.post(
+            "/v1/agent/generate",
+            json={"project_id": project["id"], "request": "Create a tiny Python app"},
+        )
+    assert response.status_code == 409
+    assert target.read_text() == "original"
