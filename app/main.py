@@ -1,11 +1,20 @@
+import asyncio
 import json
 import sqlite3
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, status
+from fastapi.responses import FileResponse
 
 from app.agent import add_event, event_responses, run_response
+from app.builds import (
+    add_build_event,
+    build_event_responses,
+    build_job_response,
+    execute_build,
+    get_build_profiles,
+)
 from app.config import Settings
 from app.database import connect, fts_available, initialize
 from app.inference import (
@@ -16,6 +25,10 @@ from app.inference import (
 )
 from app.schemas import (
     AgentEventResponse,
+    BuildEventResponse,
+    BuildJobCreate,
+    BuildJobResponse,
+    BuildProfileResponse,
     ProjectInspectionResponse,
     AgentRejectRequest,
     AgentRepairRequest,
@@ -49,6 +62,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         config.workspace_root.mkdir(parents=True, exist_ok=True)
+        config.artifact_root.mkdir(parents=True, exist_ok=True)
         initialize(config.database_path)
         # Never replay an interrupted write automatically after a process restart.
         with connect(config.database_path) as db:
@@ -72,7 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     application = FastAPI(
         title="Ia-localfix API",
-        version="0.4.0",
+        version="0.5.0",
         description="Local-first AI software engineering control plane.",
         lifespan=lifespan,
     )
@@ -641,6 +655,230 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "SELECT * FROM agent_runs WHERE id = ?", (run_id,)
             ).fetchone()
         return run_response(result)
+
+
+    @application.get(
+        "/v1/projects/{project_id}/build-profiles",
+        response_model=list[BuildProfileResponse],
+    )
+    async def list_build_profiles(project_id: str):
+        with connect(config.database_path) as db:
+            project = db.execute(
+                "SELECT id, slug FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found.")
+        try:
+            return get_build_profiles(config.workspace_root, project["slug"], config)
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @application.post(
+        "/v1/projects/{project_id}/builds",
+        response_model=BuildJobResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_build_job(project_id: str, payload: BuildJobCreate):
+        with connect(config.database_path) as db:
+            project = db.execute(
+                "SELECT id, slug FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found.")
+        try:
+            profiles = get_build_profiles(config.workspace_root, project["slug"], config)
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        profile = next((item for item in profiles if item["id"] == payload.profile_id), None)
+        if not profile or not profile["available"]:
+            raise HTTPException(
+                status_code=422,
+                detail=(profile["reason"] if profile else "Unsupported build profile."),
+            )
+
+        job_id = str(uuid.uuid4())
+        with connect(config.database_path) as db:
+            db.execute(
+                """INSERT INTO build_jobs (id, project_id, profile_id, status)
+                   VALUES (?, ?, ?, 'awaiting_approval')""",
+                (job_id, project_id, payload.profile_id),
+            )
+            add_build_event(
+                db,
+                job_id,
+                "build_proposed",
+                {
+                    "profile_id": payload.profile_id,
+                    "message": "Build command is fixed by the server profile; no execution has started.",
+                },
+            )
+            add_build_event(
+                db,
+                job_id,
+                "awaiting_approval",
+                {"message": "Explicit approval is required before a container starts."},
+            )
+            row = db.execute("SELECT * FROM build_jobs WHERE id = ?", (job_id,)).fetchone()
+        return build_job_response(row)
+
+    @application.get(
+        "/v1/projects/{project_id}/builds",
+        response_model=list[BuildJobResponse],
+    )
+    async def list_build_jobs(project_id: str):
+        with connect(config.database_path) as db:
+            exists = db.execute(
+                "SELECT 1 FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+            if not exists:
+                raise HTTPException(status_code=404, detail="Project not found.")
+            rows = db.execute(
+                """SELECT * FROM build_jobs WHERE project_id = ?
+                   ORDER BY created_at DESC LIMIT 50""",
+                (project_id,),
+            ).fetchall()
+        return [build_job_response(row) for row in rows]
+
+    @application.get("/v1/builds/{build_id}", response_model=BuildJobResponse)
+    async def get_build_job(build_id: str):
+        with connect(config.database_path) as db:
+            row = db.execute("SELECT * FROM build_jobs WHERE id = ?", (build_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Build job not found.")
+        return build_job_response(row)
+
+    @application.get(
+        "/v1/builds/{build_id}/events",
+        response_model=list[BuildEventResponse],
+    )
+    async def get_build_job_events(build_id: str):
+        with connect(config.database_path) as db:
+            exists = db.execute(
+                "SELECT 1 FROM build_jobs WHERE id = ?", (build_id,)
+            ).fetchone()
+            if not exists:
+                raise HTTPException(status_code=404, detail="Build job not found.")
+            return build_event_responses(db, build_id)
+
+    @application.post(
+        "/v1/builds/{build_id}/approve",
+        response_model=BuildJobResponse,
+    )
+    async def approve_build_job(build_id: str):
+        with connect(config.database_path) as db:
+            row = db.execute("SELECT * FROM build_jobs WHERE id = ?", (build_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Build job not found.")
+            claimed = db.execute(
+                """UPDATE build_jobs
+                   SET status = 'running', started_at = CURRENT_TIMESTAMP,
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND status = 'awaiting_approval'""",
+                (build_id,),
+            )
+            if claimed.rowcount != 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Build job cannot be approved from status '{row['status']}'.",
+                )
+            project = db.execute(
+                "SELECT slug FROM projects WHERE id = ?", (row["project_id"],)
+            ).fetchone()
+            add_build_event(
+                db,
+                build_id,
+                "approval_granted",
+                {"message": "User approved execution of the fixed server-side build profile."},
+            )
+
+        result = await asyncio.to_thread(
+            execute_build,
+            config.workspace_root,
+            project["slug"],
+            row["profile_id"],
+            config,
+            build_id,
+        )
+        with connect(config.database_path) as db:
+            db.execute(
+                """UPDATE build_jobs SET status = ?, result_json = ?, error = ?,
+                   updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND status = 'running'""",
+                (
+                    result["status"],
+                    json.dumps(result, ensure_ascii=False),
+                    result.get("error"),
+                    build_id,
+                ),
+            )
+            add_build_event(
+                db,
+                build_id,
+                "build_finished",
+                {
+                    "status": result["status"],
+                    "exit_code": result.get("exit_code"),
+                    "duration_ms": result.get("duration_ms"),
+                    "artifact_count": len(result.get("artifacts", [])),
+                    "error": result.get("error"),
+                },
+            )
+            final_row = db.execute(
+                "SELECT * FROM build_jobs WHERE id = ?", (build_id,)
+            ).fetchone()
+        return build_job_response(final_row)
+
+    @application.post(
+        "/v1/builds/{build_id}/reject",
+        response_model=BuildJobResponse,
+    )
+    async def reject_build_job(build_id: str, payload: AgentRejectRequest):
+        with connect(config.database_path) as db:
+            row = db.execute("SELECT * FROM build_jobs WHERE id = ?", (build_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Build job not found.")
+            updated = db.execute(
+                """UPDATE build_jobs SET status = 'rejected',
+                   updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND status = 'awaiting_approval'""",
+                (build_id,),
+            )
+            if updated.rowcount != 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Build job cannot be rejected from status '{row['status']}'.",
+                )
+            add_build_event(db, build_id, "build_rejected", {"reason": payload.reason})
+            result = db.execute(
+                "SELECT * FROM build_jobs WHERE id = ?", (build_id,)
+            ).fetchone()
+        return build_job_response(result)
+
+    @application.get("/v1/builds/{build_id}/artifacts/{artifact_name}")
+    async def download_build_artifact(build_id: str, artifact_name: str):
+        with connect(config.database_path) as db:
+            row = db.execute(
+                "SELECT result_json FROM build_jobs WHERE id = ?", (build_id,)
+            ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Build job not found.")
+        result = json.loads(row["result_json"]) if row["result_json"] else {}
+        artifact = next(
+            (item for item in result.get("artifacts", []) if item.get("name") == artifact_name),
+            None,
+        )
+        if not artifact or Path(artifact_name).name != artifact_name:
+            raise HTTPException(status_code=404, detail="Build artifact not found.")
+        artifact_path = (config.artifact_root / build_id / artifact_name).resolve()
+        artifact_root = (config.artifact_root / build_id).resolve()
+        if artifact_root not in artifact_path.parents or not artifact_path.is_file():
+            raise HTTPException(status_code=404, detail="Build artifact not found.")
+        media_type = (
+            "application/vnd.android.package-archive"
+            if artifact_name.lower().endswith(".apk")
+            else "application/octet-stream"
+        )
+        return FileResponse(artifact_path, media_type=media_type, filename=artifact_name)
 
     return application
 
