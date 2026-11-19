@@ -294,3 +294,130 @@ def test_interrupted_agent_run_is_marked_failed_on_restart(tmp_path, monkeypatch
         events = restarted_client.get(f"/v1/agent/runs/{run['id']}/events").json()
 
     assert events[-1]["event_type"] == "application_interrupted"
+
+
+def test_project_inspection_lists_text_files_but_not_secrets_or_build_dirs(tmp_path):
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Inspect Project"}).json()
+        root = tmp_path / "workspaces" / "inspect-project"
+        (root / "src").mkdir()
+        (root / "src" / "main.py").write_text("print('hello')\\n")
+        (root / ".env").write_text("API_TOKEN=must-not-leak")
+        (root / "node_modules").mkdir()
+        (root / "node_modules" / "ignored.js").write_text("ignored")
+        (root / ".github" / "workflows").mkdir(parents=True)
+        (root / ".github" / "workflows" / "ci.yml").write_text("name: CI\\n")
+
+        response = client.get(f"/v1/projects/{project['id']}/inspect")
+
+    assert response.status_code == 200
+    paths = {item["path"] for item in response.json()["files"]}
+    assert "src/main.py" in paths
+    assert ".github/workflows/ci.yml" in paths
+    assert ".env" not in paths
+    assert "node_modules/ignored.js" not in paths
+    assert "must-not-leak" not in response.text
+
+
+def test_agent_can_update_an_inspected_file_after_approval(tmp_path, monkeypatch):
+    import hashlib
+    import app.main
+
+    async def fake_proposal(*_args):
+        original = b"print('old')\\n"
+        return {
+            "summary": "Update the entry point.",
+            "plan": "Replace the greeting while preserving the project structure.",
+            "steps": [
+                {"title": "Update entry point", "description": "Change the greeting."}
+            ],
+            "files": [
+                {
+                    "path": "main.py",
+                    "content": "print('new')\\n",
+                    "operation": "update",
+                    "expected_sha256": hashlib.sha256(original).hexdigest(),
+                }
+            ],
+        }
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Update Agent"}).json()
+        target = tmp_path / "workspaces" / "update-agent" / "main.py"
+        target.write_bytes(b"print('old')\\n")
+        run_response = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Update the Python greeting"},
+        )
+        assert run_response.status_code == 201
+        run = run_response.json()
+        assert run["files"][0]["operation"] == "update"
+        assert target.read_bytes() == b"print('old')\\n"
+
+        approved = client.post(f"/v1/agent/runs/{run['id']}/approve")
+
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "completed"
+    assert target.read_bytes() == b"print('new')\\n"
+
+
+def test_agent_refuses_stale_update_if_file_changes_after_proposal(tmp_path, monkeypatch):
+    import hashlib
+    import app.main
+
+    original = b"VALUE = 1\\n"
+
+    async def fake_proposal(*_args):
+        return {
+            "summary": "Update an existing module.",
+            "plan": "Change the constant.",
+            "steps": [
+                {"title": "Update module", "description": "Change the constant safely."}
+            ],
+            "files": [
+                {
+                    "path": "module.py",
+                    "content": "VALUE = 2\\n",
+                    "operation": "update",
+                    "expected_sha256": hashlib.sha256(original).hexdigest(),
+                }
+            ],
+        }
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Stale Update"}).json()
+        target = tmp_path / "workspaces" / "stale-update" / "module.py"
+        target.write_bytes(original)
+        run = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Update the module constant"},
+        ).json()
+        target.write_bytes(b"VALUE = 99\\n")
+
+        response = client.post(f"/v1/agent/runs/{run['id']}/approve")
+        state = client.get(f"/v1/agent/runs/{run['id']}")
+
+    assert response.status_code == 422
+    assert state.json()["status"] == "failed"
+    assert target.read_bytes() == b"VALUE = 99\\n"
+
+
+def test_static_validation_reports_syntax_errors_without_executing_code(tmp_path):
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Static Validation"}).json()
+        root = tmp_path / "workspaces" / "static-validation"
+        (root / "bad.py").write_text("def broken(:\\n    pass\\n")
+        (root / "package.json").write_text('{"name": "missing brace"')
+        (root / "safe.py").write_text("raise RuntimeError('must not execute')\\n")
+
+        response = client.post(f"/v1/projects/{project['id']}/validate")
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["success"] is False
+    assert result["execution_performed"] is False
+    assert result["checked_files"] == 3
+    assert result["error_count"] == 2
+    assert {item["path"] for item in result["diagnostics"]} == {"bad.py", "package.json"}
