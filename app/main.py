@@ -1,17 +1,39 @@
+import json
 import sqlite3
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, status
 
+from app.agent import add_event, event_responses, run_response
 from app.config import Settings
 from app.database import connect, fts_available, initialize
-from app.inference import InferenceUnavailable, create_plan, generate_project_files
-from app.schemas import (
-    GenerateRequest, GenerateResponse, MemoryCreate, MemoryOut, PlanRequest,
-    PlanResponse, ProjectCreate, ProjectOut,
+from app.inference import (
+    InferenceUnavailable,
+    create_plan,
+    generate_agent_proposal,
+    generate_project_files,
 )
-from app.workspaces import create_workspace, make_slug, write_generated_files
+from app.schemas import (
+    AgentEventResponse,
+    AgentRejectRequest,
+    AgentRunCreate,
+    AgentRunResponse,
+    GenerateRequest,
+    GenerateResponse,
+    MemoryCreate,
+    MemoryOut,
+    PlanRequest,
+    PlanResponse,
+    ProjectCreate,
+    ProjectOut,
+)
+from app.workspaces import (
+    create_workspace,
+    make_slug,
+    validate_generated_files,
+    write_generated_files,
+)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -172,6 +194,221 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "project_id": payload.project_id,
             "files": written,
         }
+
+    @application.post(
+        "/v1/agent/runs",
+        response_model=AgentRunResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_agent_run(payload: AgentRunCreate):
+        with connect(config.database_path) as db:
+            project = db.execute(
+                "SELECT id, name, slug FROM projects WHERE id = ?",
+                (payload.project_id,),
+            ).fetchone()
+            if not project:
+                raise HTTPException(status_code=404, detail="Project not found.")
+            memories = db.execute(
+                """SELECT content FROM memories
+                   WHERE project_id = ? ORDER BY created_at DESC LIMIT 8""",
+                (payload.project_id,),
+            ).fetchall()
+
+        project_context = {
+            "project_name": project["name"],
+            "recent_project_memory": [row["content"] for row in memories],
+            "generation_policy": "Generate new files only; never overwrite existing files.",
+        }
+        try:
+            proposal = await generate_agent_proposal(
+                config.ollama_base_url,
+                config.ollama_model,
+                payload.request,
+                project_context,
+            )
+            validate_generated_files(
+                config.workspace_root, project["slug"], proposal["files"]
+            )
+        except InferenceUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except FileExistsError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        run_id = str(uuid.uuid4())
+        with connect(config.database_path) as db:
+            db.execute(
+                """INSERT INTO agent_runs
+                   (id, project_id, request, model, status, proposal_json)
+                   VALUES (?, ?, ?, ?, 'awaiting_approval', ?)""",
+                (
+                    run_id,
+                    payload.project_id,
+                    payload.request,
+                    config.ollama_model,
+                    json.dumps(proposal, ensure_ascii=False),
+                ),
+            )
+            add_event(
+                db,
+                run_id,
+                "proposal_created",
+                {
+                    "summary": proposal["summary"],
+                    "step_count": len(proposal["steps"]),
+                    "file_count": len(proposal["files"]),
+                },
+            )
+            add_event(
+                db,
+                run_id,
+                "awaiting_approval",
+                {"message": "No project files have been written yet."},
+            )
+            row = db.execute(
+                "SELECT * FROM agent_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+        return run_response(row)
+
+    @application.get("/v1/agent/runs", response_model=list[AgentRunResponse])
+    async def list_agent_runs(
+        project_id: str = Query(min_length=1),
+    ):
+        with connect(config.database_path) as db:
+            project = db.execute(
+                "SELECT 1 FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+            if not project:
+                raise HTTPException(status_code=404, detail="Project not found.")
+            rows = db.execute(
+                """SELECT * FROM agent_runs
+                   WHERE project_id = ? ORDER BY created_at DESC LIMIT 50""",
+                (project_id,),
+            ).fetchall()
+        return [run_response(row) for row in rows]
+
+    @application.get("/v1/agent/runs/{run_id}", response_model=AgentRunResponse)
+    async def get_agent_run(run_id: str):
+        with connect(config.database_path) as db:
+            row = db.execute(
+                "SELECT * FROM agent_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Agent run not found.")
+        return run_response(row)
+
+    @application.get(
+        "/v1/agent/runs/{run_id}/events",
+        response_model=list[AgentEventResponse],
+    )
+    async def get_agent_run_events(run_id: str):
+        with connect(config.database_path) as db:
+            exists = db.execute(
+                "SELECT 1 FROM agent_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if not exists:
+                raise HTTPException(status_code=404, detail="Agent run not found.")
+            return event_responses(db, run_id)
+
+    @application.post(
+        "/v1/agent/runs/{run_id}/approve",
+        response_model=AgentRunResponse,
+    )
+    async def approve_agent_run(run_id: str):
+        # Claim the run in one transaction so concurrent approval calls cannot
+        # apply the same proposal twice.
+        with connect(config.database_path) as db:
+            row = db.execute(
+                "SELECT * FROM agent_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Agent run not found.")
+            claimed = db.execute(
+                """UPDATE agent_runs
+                   SET status = 'applying', updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND status = 'awaiting_approval'""",
+                (run_id,),
+            )
+            if claimed.rowcount != 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Agent run cannot be approved from status '{row['status']}'.",
+                )
+            project = db.execute(
+                "SELECT slug FROM projects WHERE id = ?", (row["project_id"],)
+            ).fetchone()
+            proposal = json.loads(row["proposal_json"])
+            add_event(db, run_id, "approval_granted", {"message": "User approved file application."})
+
+        try:
+            written = write_generated_files(
+                config.workspace_root, project["slug"], proposal["files"]
+            )
+        except (FileExistsError, ValueError, OSError) as exc:
+            with connect(config.database_path) as db:
+                db.execute(
+                    """UPDATE agent_runs SET status = 'failed', error = ?,
+                       updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
+                    (str(exc)[:1000], run_id),
+                )
+                add_event(
+                    db,
+                    run_id,
+                    "application_failed",
+                    {"error": str(exc)[:1000]},
+                )
+            if isinstance(exc, FileExistsError):
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        with connect(config.database_path) as db:
+            db.execute(
+                """UPDATE agent_runs
+                   SET status = 'completed', error = NULL,
+                       updated_at = CURRENT_TIMESTAMP,
+                       completed_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND status = 'applying'""",
+                (run_id,),
+            )
+            add_event(
+                db,
+                run_id,
+                "files_applied",
+                {"files": written, "count": len(written)},
+            )
+            row = db.execute(
+                "SELECT * FROM agent_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+        return run_response(row)
+
+    @application.post(
+        "/v1/agent/runs/{run_id}/reject",
+        response_model=AgentRunResponse,
+    )
+    async def reject_agent_run(run_id: str, payload: AgentRejectRequest):
+        with connect(config.database_path) as db:
+            row = db.execute(
+                "SELECT * FROM agent_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Agent run not found.")
+            updated = db.execute(
+                """UPDATE agent_runs
+                   SET status = 'rejected', updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ? AND status = 'awaiting_approval'""",
+                (run_id,),
+            )
+            if updated.rowcount != 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Agent run cannot be rejected from status '{row['status']}'.",
+                )
+            add_event(db, run_id, "proposal_rejected", {"reason": payload.reason})
+            result = db.execute(
+                "SELECT * FROM agent_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+        return run_response(result)
 
     return application
 
