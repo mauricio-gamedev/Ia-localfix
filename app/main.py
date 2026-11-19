@@ -29,8 +29,11 @@ from app.schemas import (
     ProjectOut,
 )
 from app.workspaces import (
+    apply_generated_changes,
     create_workspace,
+    inspect_workspace,
     make_slug,
+    validate_generated_changes,
     validate_generated_files,
     write_generated_files,
 )
@@ -65,7 +68,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     application = FastAPI(
         title="Ia-localfix API",
-        version="0.3.0",
+        version="0.4.0",
         description="Local-first AI software engineering control plane.",
         lifespan=lifespan,
     )
@@ -116,6 +119,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             workspace.rmdir()
             raise HTTPException(status_code=409, detail="Project already exists.") from exc
         return dict(row)
+
+    @application.get(
+        "/v1/projects/{project_id}/inspect",
+        response_model=ProjectInspectionResponse,
+    )
+    async def inspect_project(project_id: str):
+        with connect(config.database_path) as db:
+            project = db.execute(
+                "SELECT id, slug FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found.")
+        try:
+            snapshot = inspect_workspace(config.workspace_root, project["slug"])
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # Do not return full source contents from the inspection API.
+        public_files = [
+            {
+                "path": item["path"],
+                "size_bytes": item["size_bytes"],
+                "sha256": item["sha256"],
+                "preview": item["preview"],
+                "truncated": item["truncated"],
+            }
+            for item in snapshot["files"]
+        ]
+        return {
+            "project_id": project_id,
+            "files": public_files,
+            "file_count": snapshot["file_count"],
+            "omitted_count": snapshot["omitted_count"],
+            "total_bytes": snapshot["total_bytes"],
+            "project_markers": snapshot["project_markers"],
+        }
 
     @application.post("/v1/memory", response_model=MemoryOut, status_code=status.HTTP_201_CREATED)
     async def save_memory(payload: MemoryCreate):
@@ -232,10 +270,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 (payload.project_id,),
             ).fetchall()
 
+        try:
+            snapshot = inspect_workspace(config.workspace_root, project["slug"])
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
         project_context = {
             "project_name": project["name"],
             "recent_project_memory": [row["content"] for row in memories],
-            "generation_policy": "Generate new files only; never overwrite existing files.",
+            "project_markers": snapshot["project_markers"],
+            "existing_files": [
+                {
+                    "path": item["path"],
+                    "content": item["content"],
+                    "sha256": item["sha256"],
+                }
+                for item in snapshot["files"]
+            ],
+            "generation_policy": (
+                "Create missing files or update inspected text files only. "
+                "Updates must use the provided exact SHA-256 fingerprint. Never delete files."
+            ),
         }
         try:
             proposal = await generate_agent_proposal(
@@ -244,7 +299,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 payload.request,
                 project_context,
             )
-            validate_generated_files(
+            validate_generated_changes(
                 config.workspace_root, project["slug"], proposal["files"]
             )
         except InferenceUnavailable as exc:
@@ -360,7 +415,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             add_event(db, run_id, "approval_granted", {"message": "User approved file application."})
 
         try:
-            written = write_generated_files(
+            written = apply_generated_changes(
                 config.workspace_root, project["slug"], proposal["files"]
             )
         except (FileExistsError, ValueError, OSError) as exc:
