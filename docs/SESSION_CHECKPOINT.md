@@ -46,7 +46,7 @@ Updated: 2026-11-19
 Existing agent run endpoints remain documented in the README.
 
 ## v0.7 additions
-- Optional bearer-token authentication protects every endpoint except /health, including docs/OpenAPI, when IA_API_TOKEN is configured. Tokens require at least 32 ASCII non-whitespace characters and are checked with constant-time comparison.
+- Optional bearer-token authentication protects every API endpoint except /health when IA_API_TOKEN is configured. The docs and OpenAPI schema remain readable, with protected operations marked for Bearer authorization in Swagger UI. Tokens require at least 32 ASCII non-whitespace characters and are checked with constant-time comparison.
 - IA_ALLOW_REMOTE=true requires a valid token at startup as an explicit deployment guard. It does not detect the actual Uvicorn bind address or provide TLS; remote ingress still needs separate network/TLS hardening.
 - Build result summaries are normalized for Python unittest, Node TAP and Gradle JUnit XML. Parsing is bounded to at most 50 report candidates of at most 512 KB each. Missing/unparseable reports remain null and are not treated as success.
 

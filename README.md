@@ -114,7 +114,7 @@ A repair proposal can itself be rejected. The workflow does not continue automat
 
 ## API authentication
 
-Local development remains unauthenticated by default when no token is configured. To enable authentication, set IA_API_TOKEN to a secret of at least 32 ASCII characters with no whitespace. Once configured, every route except GET /health requires Authorization: Bearer <token>; this includes /docs, /redoc and /openapi.json. The token is compared in constant time and is never returned by the API.
+Local development remains unauthenticated by default when no token is configured. To enable authentication, set IA_API_TOKEN to a secret of at least 32 ASCII characters with no whitespace. Once configured, every API operation except GET /health requires Authorization: Bearer <token>. The documentation pages and OpenAPI schema remain readable so Swagger UI can load; the generated schema marks protected operations with HTTP Bearer security and provides an Authorize control. The token is compared in constant time and is never returned by the API.
 
 Before intentionally binding the API to a non-loopback interface, set IA_ALLOW_REMOTE=true; startup then fails unless a valid IA_API_TOKEN is also configured. This setting is an operator guardrail and does not configure Uvicorn's bind address, TLS, a reverse proxy, or firewall rules. Use TLS and a restricted network path for remote access. Do not commit the token to the repository.
 

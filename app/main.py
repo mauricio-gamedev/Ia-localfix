@@ -7,6 +7,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, status
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import FileResponse, JSONResponse
 
 from app.agent import add_event, event_responses, run_response
@@ -114,7 +115,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if config.api_token:
         @application.middleware("http")
         async def require_bearer_token(request, call_next):
-            if request.url.path == "/health":
+            if request.url.path in {"/health", "/docs", "/redoc", "/openapi.json"}:
                 return await call_next(request)
             authorization = request.headers.get("authorization", "")
             scheme, separator, supplied = authorization.partition(" ")
@@ -133,6 +134,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     headers={"WWW-Authenticate": "Bearer"},
                 )
             return await call_next(request)
+
+        def authenticated_openapi():
+            if application.openapi_schema:
+                return application.openapi_schema
+            schema = get_openapi(
+                title=application.title,
+                version=application.version,
+                description=application.description,
+                routes=application.routes,
+            )
+            schemes = schema.setdefault("components", {}).setdefault("securitySchemes", {})
+            schemes["BearerAuth"] = {"type": "http", "scheme": "bearer"}
+            for path, path_item in schema.get("paths", {}).items():
+                for method, operation in path_item.items():
+                    if method.lower() not in {
+                        "get", "post", "put", "patch", "delete", "options", "head", "trace"
+                    }:
+                        continue
+                    operation["security"] = [] if path == "/health" else [{"BearerAuth": []}]
+            application.openapi_schema = schema
+            return application.openapi_schema
+
+        application.openapi = authenticated_openapi
 
     @application.get("/health")
     async def health():

@@ -56,7 +56,7 @@ GitHub Actions has two jobs: deterministic API/unit tests and a live Docker inte
 
 ## API authentication and test reports
 
-When IA_API_TOKEN is configured, HTTP middleware checks a bearer token on every route except /health, including interactive documentation and OpenAPI. Tokens must have at least 32 ASCII non-whitespace characters. IA_ALLOW_REMOTE=true prevents startup without a token; it is an explicit operator acknowledgment, not automatic bind-address detection or transport encryption. Remote operation still requires TLS, restricted ingress and careful Docker-host protection.
+When IA_API_TOKEN is configured, HTTP middleware checks a bearer token on every API route except /health. Documentation pages and the OpenAPI schema remain readable; the generated schema adds an HTTP Bearer security scheme to protected operations so Swagger UI can authorize calls. Tokens must have at least 32 ASCII non-whitespace characters. IA_ALLOW_REMOTE=true prevents startup without a token; it is an explicit operator acknowledgment, not automatic bind-address detection or transport encryption. Remote operation still requires TLS, restricted ingress and careful Docker-host protection.
 
 Build summaries are normalized from Python unittest output, Node TAP counters and Gradle JUnit XML. XML discovery is restricted to at most 50 TEST-*.xml candidates of at most 512 KB each inside the disposable build workspace; malformed, oversized, symlinked or out-of-workspace reports are ignored. A missing summary remains null and is never interpreted as a passing test suite.
 

@@ -32,7 +32,7 @@ def _python_unittest(status: str, log: str) -> dict | None:
     tail = log[match.end():]
     failed_match = re.search(r"^FAILED\s*\(([^)]*)\)", tail, re.MULTILINE)
     ok_match = re.search(r"^OK(?:\s*\(([^)]*)\))?", tail, re.MULTILINE)
-    counts_text = failed_match.group(1) if failed_match else (ok_match.group(1) if ok_match else "")
+    counts_text = (failed_match.group(1) if failed_match else (ok_match.group(1) if ok_match else "")) or ""
     counts = {
         key: int(value)
         for key, value in re.findall(r"(failures|errors|skipped)\s*=\s*(\d+)", counts_text)

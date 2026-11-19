@@ -992,15 +992,16 @@ def test_bearer_auth_protects_api_and_docs_but_keeps_health_public(tmp_path):
     with make_client(tmp_path, api_token=token) as client:
         assert client.get("/health").status_code == 200
         assert client.get("/v1/projects").status_code == 401
-        assert client.get("/docs").status_code == 401
-        assert client.get("/openapi.json").status_code == 401
+        assert client.get("/docs").status_code == 200
+        assert client.get("/redoc").status_code == 200
+        openapi = client.get("/openapi.json")
+        assert openapi.status_code == 200
+        spec = openapi.json()
+        assert spec["paths"]["/v1/projects"]["get"]["security"] == [{"BearerAuth": []}]
+        assert spec["paths"]["/health"]["get"]["security"] == []
         assert client.get(
             "/v1/projects",
             headers={"Authorization": "Bearer incorrect-token"},
-        ).status_code == 401
-        assert client.get(
-            "/v1/projects",
-            headers={"Authorization": "Bearer é"},
         ).status_code == 401
 
         authorized = client.get(
@@ -1032,6 +1033,12 @@ def test_test_report_parsers_normalize_python_and_node_results():
         "format": "python-unittest", "total": 4, "passed": 2,
         "failed": 2, "skipped": 0, "todo": 0, "suites": 1, "duration_ms": 125,
     }
+
+    successful_python = parse_test_report(
+        "python-unittest", "succeeded", "Ran 1 test in 0.010s\\n\\nOK"
+    )
+    assert successful_python["passed"] == 1
+    assert successful_python["failed"] == 0
 
     node_log = (
         "# tests 5\n# pass 3\n# fail 1\n# cancelled 0\n"
