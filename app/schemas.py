@@ -129,3 +129,22 @@ class AgentEventResponse(BaseModel):
     event_type: str
     payload: dict
     created_at: str
+
+
+class ProjectValidationDiagnostic(BaseModel):
+    path: str
+    severity: Literal["error", "warning"]
+    message: str
+    line: int | None
+    column: int | None
+
+
+class ProjectValidationResponse(BaseModel):
+    success: bool
+    project_id: str
+    checked_files: int
+    error_count: int
+    diagnostics: list[ProjectValidationDiagnostic]
+    omitted_count: int
+    project_markers: list[str]
+    execution_performed: bool
