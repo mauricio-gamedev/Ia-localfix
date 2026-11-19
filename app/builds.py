@@ -241,17 +241,21 @@ def _container_args(docker_binary: str, profile: BuildProfile, workspace: Path, 
         raise ValueError("Build memory limit must use a positive M or G value.")
     if not 0.1 <= settings.build_cpus <= 8 or not 32 <= settings.build_pids_limit <= 512:
         raise ValueError("Build CPU or PID limit is outside the supported range.")
+    runner_uid = os.getuid()
+    runner_gid = os.getgid()
+    if runner_uid == 0:
+        runner_uid, runner_gid = 10001, 10001
     return [
         docker_binary, "run", "--rm", "--pull=never", "--network=none",
         "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
         "--ulimit", "nofile=1024:1024",
         "--pids-limit", str(settings.build_pids_limit),
         "--memory", settings.build_memory_limit, "--memory-swap", settings.build_memory_limit,
-        "--cpus", str(settings.build_cpus), "--user", "10001:10001",
+        "--cpus", str(settings.build_cpus), "--user", f"{runner_uid}:{runner_gid}",
         "--workdir", "/workspace", "--hostname", "ia-localfix-worker",
         "--env", "CI=true", "--env", "HOME=/home/runner",
-        "--tmpfs", "/tmp:rw,noexec,nosuid,size=128m,uid=10001,gid=10001",
-        "--tmpfs", "/home/runner:rw,nosuid,size=512m,uid=10001,gid=10001",
+        "--tmpfs", f"/tmp:rw,noexec,nosuid,size=128m,uid={runner_uid},gid={runner_gid}",
+        "--tmpfs", f"/home/runner:rw,nosuid,size=512m,uid={runner_uid},gid={runner_gid}",
         "--mount", f"type=bind,source={workspace},target=/workspace",
         profile.image, *profile.command,
     ]

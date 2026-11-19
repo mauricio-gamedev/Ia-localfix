@@ -643,7 +643,11 @@ def test_docker_runner_uses_fixed_offline_hardened_argument_vector(tmp_path, mon
     assert "--read-only" in args
     assert "--cap-drop=ALL" in args
     assert "--security-opt=no-new-privileges" in args
-    assert "--user" in args and args[args.index("--user") + 1] == "10001:10001"
+    import os
+    expected_uid = os.getuid() if os.getuid() != 0 else 10001
+    expected_gid = os.getgid() if os.getuid() != 0 else 10001
+    assert "--user" in args
+    assert args[args.index("--user") + 1] == f"{expected_uid}:{expected_gid}"
     assert args[-6:] == ["python:3.12-slim", "python", "-m", "unittest", "discover", "-v"]
     assert captured["kwargs"]["timeout"] == 900
     assert "shell" not in captured["kwargs"]
