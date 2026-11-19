@@ -2,7 +2,7 @@
 
 Local-first AI software engineering agent.
 
-**Current milestone: v0.7.0 — API authentication and normalized test reports.**
+**Backend: v0.7.0. Android client: MVP 0.1.0 (debug APK pipeline under validation).**
 
 ## Implemented foundation
 
@@ -121,3 +121,36 @@ Before intentionally binding the API to a non-loopback interface, set IA_ALLOW_R
 ## Test result summaries
 
 Completed build results include a normalized result.test_report when the selected toolchain emits a supported summary. Python unittest uses its final test-count line, Node uses TAP counters, and Android unit tests use bounded Gradle JUnit XML files. The summary reports format, total, passed, failed, skipped, todo, suite count and duration when available. A missing report is represented as null; absence of a parsed report is not evidence that tests passed.
+
+
+## Android client MVP
+
+The Android app is in `android/` and targets Android 8.0 (API 26) or later. The first MVP includes:
+
+- Dark chat interface with project selection.
+- Create and list isolated backend projects.
+- Submit a request to create a supervised AI file proposal.
+- Inspect the plan, steps and bounded file previews.
+- Explicitly approve or reject the proposal.
+- Configure the API base URL and bearer token from the phone.
+- Encrypt the saved API token with Android Keystore.
+
+GitHub Actions builds `app-debug.apk` in the `android-apk` job and uploads it as the `ia-localfix-debug-apk` artifact for 14 days. The APK is a debug build, not a Play Store release.
+
+### Connect the phone to the API host
+
+The phone is a client; the Ollama inference runtime and Docker build worker run on the API host. Put the phone and host on a trusted network, then start the backend with a strong token:
+
+```bash
+export IA_API_TOKEN='replace-with-a-random-secret-of-at-least-32-characters'
+export IA_ALLOW_REMOTE=true
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Allow inbound TCP port 8000 on that trusted network only. In the Android app, open Settings and enter the host computer's LAN address, for example `http://192.168.1.10:8000`, plus the same token. Do not expose this HTTP debug setup to the public internet. Use HTTPS and suitable ingress controls for remote access.
+
+The debug manifest permits cleartext HTTP for trusted-LAN development. The main/release manifest does not enable cleartext traffic. A working model runtime is required for AI generation; a reachable API alone can create and list projects but cannot generate a proposal when Ollama is unavailable.
+
+### Build locally
+
+Open the `android/` folder in Android Studio, or run `gradle assembleDebug` with JDK 17, Gradle 8.9 and Android SDK Platform 35 installed. The resulting debug APK is at `android/app/build/outputs/apk/debug/app-debug.apk`.

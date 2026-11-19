@@ -75,3 +75,10 @@ Build summaries are normalized from Python unittest output, Node TAP counters an
 - Require explicit approval for destructive or external side effects.
 - Keep model endpoints loopback-bound by default.
 - Do not store credentials or secrets in long-term memory.
+
+
+## Android client
+
+The native Android client lives under `android/` and uses Kotlin, Jetpack Compose, Android's platform HTTP stack and coroutines. It is intentionally a thin client: inference, durable memory, project workspaces and build execution remain on the API host. The client supports project create/list, agent-run proposal creation, review of summary/plan/step/file previews, and explicit approval/rejection. API base URL is configurable; an optional bearer token is encrypted with an AES-GCM key held by Android Keystore.
+
+The debug build enables cleartext traffic only to support trusted-LAN development where the API host may use HTTP. The main manifest keeps cleartext disabled. The CI workflow builds only the debug variant and uploads its APK and checksum as a short-lived Actions artifact. This is a test build, not a signed release distribution.

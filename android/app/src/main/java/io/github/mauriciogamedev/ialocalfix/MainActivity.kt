@@ -6,12 +6,14 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
@@ -380,11 +382,15 @@ private fun ChatScreen(
                 Text("No projects yet. Create one to start.", style = MaterialTheme.typography.bodyMedium)
                 OutlinedButton(onClick = onOpenProjects) { Text("Create project") }
             } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    projects.take(3).forEach { project ->
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    projects.forEach { project ->
                         FilterChip(
                             selected = project.id == selectedProjectId,
                             onClick = { onSelectProject(project.id) },
+                            enabled = !busy,
                             label = { Text(project.name, maxLines = 1) }
                         )
                     }

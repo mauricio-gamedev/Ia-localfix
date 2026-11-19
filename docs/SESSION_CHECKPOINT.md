@@ -50,9 +50,15 @@ Existing agent run endpoints remain documented in the README.
 - IA_ALLOW_REMOTE=true requires a valid token at startup as an explicit deployment guard. It does not detect the actual Uvicorn bind address or provide TLS; remote ingress still needs separate network/TLS hardening.
 - Build result summaries are normalized for Python unittest, Node TAP and Gradle JUnit XML. Parsing is bounded to at most 50 report candidates of at most 512 KB each. Missing/unparseable reports remain null and are not treated as success.
 
+## Android client MVP 0.1.0
+- Added a Kotlin/Jetpack Compose Android client under `android/` with dark chat, project list/create, proposal review, explicit approve/reject and API settings.
+- Added a configurable API base URL for trusted-LAN/HTTPS use. The optional bearer token is encrypted at rest using Android Keystore AES-GCM and SharedPreferences stores only the ciphertext/IV.
+- Added Android debug-only cleartext HTTP allowance for trusted-LAN testing; main/release manifest keeps cleartext disabled.
+- Added `android-apk` GitHub Actions job to assemble a debug APK and upload the APK plus SHA-256 checksum as a 14-day artifact. Build result is not yet confirmed at this checkpoint; wait for exact-head CI.
+
 ## Not implemented yet
-- No end-to-end Docker build has been run in this development environment; CI tests the Docker adapter through a mocked subprocess. A live Docker daemon/container remains unverified.
-- Publication of the Android SDK builder image and dependency-cache provisioning.
+- No actual Android APK build has yet been confirmed for the latest Android client commit; the new `android-apk` CI job is the release gate.
+- Publication of the Android SDK builder image and dependency-cache provisioning for backend-side Android project builds.
 - Additional parsers for toolchains beyond Python/Node/Gradle and richer test-report extraction.
 - Unattended multi-tool autonomy; repair cycles are intentionally supervised with per-change and per-build approvals.
 - Advanced memory ranking, summarization/compaction and retention controls.
