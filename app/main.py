@@ -43,6 +43,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(_: FastAPI):
         config.workspace_root.mkdir(parents=True, exist_ok=True)
         initialize(config.database_path)
+        # Never replay an interrupted write automatically after a process restart.
+        with connect(config.database_path) as db:
+            interrupted = db.execute(
+                "SELECT id FROM agent_runs WHERE status = 'applying'"
+            ).fetchall()
+            for item in interrupted:
+                db.execute(
+                    """UPDATE agent_runs SET status = 'failed',
+                       error = 'Application was interrupted by a process restart; inspect workspace before retrying.',
+                       updated_at = CURRENT_TIMESTAMP WHERE id = ?""",
+                    (item["id"],),
+                )
+                add_event(
+                    db,
+                    item["id"],
+                    "application_interrupted",
+                    {"message": "Process restarted while files were being applied. Inspect the workspace before retrying."},
+                )
         yield
 
     application = FastAPI(
