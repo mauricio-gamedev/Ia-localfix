@@ -148,3 +148,7 @@ class ProjectValidationResponse(BaseModel):
     omitted_count: int
     project_markers: list[str]
     execution_performed: bool
+
+
+class AgentRepairRequest(BaseModel):
+    instructions: str | None = Field(default=None, max_length=4_000)
