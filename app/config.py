@@ -19,6 +19,7 @@ class Settings:
     build_memory_limit: str = "2g"
     build_cpus: float = 2.0
     build_pids_limit: int = 128
+    max_repair_iterations: int = 2
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -37,4 +38,5 @@ class Settings:
             build_memory_limit=os.getenv("IA_BUILD_MEMORY_LIMIT", "2g"),
             build_cpus=float(os.getenv("IA_BUILD_CPUS", "2.0")),
             build_pids_limit=int(os.getenv("IA_BUILD_PIDS_LIMIT", "128")),
+            max_repair_iterations=int(os.getenv("IA_MAX_REPAIR_ITERATIONS", "2")),
         )

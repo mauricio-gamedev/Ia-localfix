@@ -171,12 +171,16 @@ class BuildJobCreate(BaseModel):
         "android-debug",
         "android-unit-tests",
     ]
+    parent_build_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class BuildJobResponse(BaseModel):
     id: str
     project_id: str
     profile_id: str
+    cycle_id: str
+    iteration: int
+    parent_build_id: str | None
     status: Literal[
         "awaiting_approval", "running", "succeeded", "failed", "timed_out", "rejected"
     ]

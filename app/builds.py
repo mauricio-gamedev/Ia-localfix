@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from app.build_diagnostics import parse_build_diagnostics
 from app.workspaces import SKIP_DIRS, project_directory
 
 MAX_BUILD_SOURCE_BYTES = 250_000_000
@@ -264,7 +265,7 @@ def execute_build(root: Path, slug: str, profile_id: str, settings: Any, job_id:
         return {
             "status": "failed", "exit_code": None, "duration_ms": 0,
             "log": "", "error": "The required builder image is not configured on the server.",
-            "artifacts": [],
+            "artifacts": [], "diagnostics": [],
         }
     _, project_dir = project_directory(root, slug)
     started = time.monotonic()
@@ -304,16 +305,19 @@ def execute_build(root: Path, slug: str, profile_id: str, settings: Any, job_id:
                 artifacts = _collect_artifacts(
                     workspace, settings.artifact_root, job_id, profile.artifact_patterns
                 )
+            diagnostics = parse_build_diagnostics(profile_id, status, log, exit_code)
             return {
                 "status": status, "exit_code": exit_code,
                 "duration_ms": int((time.monotonic() - started) * 1000),
                 "log": log, "error": error, "artifacts": artifacts,
+                "diagnostics": diagnostics,
             }
     except (OSError, ValueError) as exc:
         return {
             "status": "failed", "exit_code": None,
             "duration_ms": int((time.monotonic() - started) * 1000),
             "log": "", "error": str(exc)[:1000], "artifacts": [],
+            "diagnostics": parse_build_diagnostics(profile_id, "failed", "", None),
         }
 
 

@@ -76,6 +76,9 @@ def initialize(database_path: Path) -> None:
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 profile_id TEXT NOT NULL,
+                cycle_id TEXT,
+                iteration INTEGER NOT NULL DEFAULT 0,
+                parent_build_id TEXT REFERENCES build_jobs(id),
                 status TEXT NOT NULL CHECK (
                     status IN ('awaiting_approval', 'running', 'succeeded', 'failed', 'timed_out', 'rejected')
                 ),
@@ -101,6 +104,20 @@ def initialize(database_path: Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_build_events_build
                 ON build_events(build_id, created_at);
             """
+        )
+        columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(build_jobs)").fetchall()
+        }
+        if "cycle_id" not in columns:
+            db.execute("ALTER TABLE build_jobs ADD COLUMN cycle_id TEXT")
+        if "iteration" not in columns:
+            db.execute("ALTER TABLE build_jobs ADD COLUMN iteration INTEGER NOT NULL DEFAULT 0")
+        if "parent_build_id" not in columns:
+            db.execute("ALTER TABLE build_jobs ADD COLUMN parent_build_id TEXT REFERENCES build_jobs(id)")
+        db.execute("UPDATE build_jobs SET cycle_id = id WHERE cycle_id IS NULL")
+        db.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_build_jobs_parent
+               ON build_jobs(parent_build_id) WHERE parent_build_id IS NOT NULL"""
         )
         try:
             db.execute(
