@@ -421,3 +421,107 @@ def test_static_validation_reports_syntax_errors_without_executing_code(tmp_path
     assert result["checked_files"] == 3
     assert result["error_count"] == 2
     assert {item["path"] for item in result["diagnostics"]} == {"bad.py", "package.json"}
+
+
+def test_agent_approval_records_static_validation_result(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_proposal(*_args):
+        return {
+            "summary": "Create a valid Python module.",
+            "plan": "Add a syntactically valid module.",
+            "steps": [
+                {"title": "Create module", "description": "Add a module with valid syntax."}
+            ],
+            "files": [{"path": "module.py", "content": "value = 42" + chr(10)}],
+        }
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Validated Agent"}).json()
+        run = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Create a valid Python module"},
+        ).json()
+        approved = client.post(f"/v1/agent/runs/{run['id']}/approve")
+        events = client.get(f"/v1/agent/runs/{run['id']}/events").json()
+
+    assert approved.status_code == 200
+    validation_event = next(e for e in events if e["event_type"] == "static_validation_completed")
+    assert validation_event["payload"]["success"] is True
+    assert validation_event["payload"]["execution_performed"] is False
+    assert events[-1]["event_type"] == "files_applied"
+
+
+def test_agent_can_create_repair_proposal_from_static_diagnostics(tmp_path, monkeypatch):
+    import hashlib
+    import app.main
+
+    broken_content = "def broken(" + chr(10) + "    pass" + chr(10)
+
+    async def initial_proposal(*_args):
+        return {
+            "summary": "Create a module with a syntax issue.",
+            "plan": "Create the module so its syntax can be checked.",
+            "steps": [
+                {"title": "Create module", "description": "Add the module before validation."}
+            ],
+            "files": [{"path": "broken.py", "content": broken_content}],
+        }
+
+    captured = {}
+
+    async def repair_proposal(_base_url, _model, request, project_context):
+        captured["request"] = request
+        captured["context"] = project_context
+        current = (tmp_path / "workspaces" / "repair-loop" / "broken.py").read_bytes()
+        return {
+            "summary": "Repair the Python syntax error.",
+            "plan": "Replace the invalid function declaration with a valid function.",
+            "steps": [
+                {"title": "Fix declaration", "description": "Use a valid function signature."}
+            ],
+            "files": [
+                {
+                    "path": "broken.py",
+                    "content": "def fixed():" + chr(10) + "    return True" + chr(10),
+                    "operation": "update",
+                    "expected_sha256": hashlib.sha256(current).hexdigest(),
+                }
+            ],
+        }
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", initial_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Repair Loop"}).json()
+        first = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Create a Python module"},
+        ).json()
+        applied = client.post(f"/v1/agent/runs/{first['id']}/approve")
+        assert applied.status_code == 200
+        diagnostics = client.post(f"/v1/projects/{project['id']}/validate").json()
+        assert diagnostics["error_count"] == 1
+
+        monkeypatch.setattr(app.main, "generate_agent_proposal", repair_proposal)
+        repair = client.post(
+            f"/v1/agent/runs/{first['id']}/repair",
+            json={"instructions": "Keep the function small."},
+        )
+        assert repair.status_code == 201
+        repair_run = repair.json()
+        assert repair_run["status"] == "awaiting_approval"
+        assert repair_run["files"][0]["operation"] == "update"
+        assert captured["context"]["static_validation"]["error_count"] == 1
+        assert captured["context"]["static_validation"]["diagnostics"][0]["path"] == "broken.py"
+        assert "Keep the function small." in captured["request"]
+
+        approved = client.post(f"/v1/agent/runs/{repair_run['id']}/approve")
+        validation = client.post(f"/v1/projects/{project['id']}/validate")
+
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "completed"
+    assert validation.status_code == 200
+    assert validation.json()["success"] is True
+    repaired = (tmp_path / "workspaces" / "repair-loop" / "broken.py").read_text()
+    assert repaired == "def fixed():" + chr(10) + "    return True" + chr(10)
