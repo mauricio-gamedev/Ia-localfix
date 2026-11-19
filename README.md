@@ -7,8 +7,9 @@ Local-first AI software engineering agent.
 - Python 3.12 + FastAPI control-plane API.
 - Ollama local inference adapter with structured project-file generation.
 - SQLite persistence with FTS5 project memory and a LIKE fallback.
-- Project workspaces constrained to a configured root directory.
-- Safe file creation: relative paths only, no traversal, no symlink escape, no overwrite, and bounded output.
+- Bounded workspace inspection with text-only snapshots, secret/build-folder exclusions, and SHA-256 file fingerprints.
+- Safe file creation and hash-checked updates: relative paths only, no traversal, no symlink escape, no unreviewed overwrite, and bounded output.
+- Non-executing syntax validation for Python, JSON, TOML and XML.
 - Pytest suite and GitHub Actions CI.
 
 ## Run locally
@@ -27,6 +28,8 @@ Set `OLLAMA_BASE_URL` and `OLLAMA_MODEL` to use a local Ollama instance. The API
 
 - `GET /health`
 - `GET /v1/projects`
+- `GET /v1/projects/{project_id}/inspect` (bounded file inventory and previews)
+- `POST /v1/projects/{project_id}/validate` (static syntax checks; no code execution)
 - `POST /v1/projects`
 - `POST /v1/memory`
 - `GET /v1/memory?q=...`
@@ -59,4 +62,4 @@ The assistant is intended to be viewpoint-neutral and configurable, while retain
 4. `POST /v1/agent/runs/{id}/approve` atomically claims an awaiting run and applies the new files once. `reject` records rejection without writing.
 5. Runs and events remain in SQLite for later inspection.
 
-This milestone implements approval-gated planning and file application. It does not yet run build tools, execute generated code, repair compiler failures, or provide an autonomous multi-tool loop. Those require the isolated worker and validation milestones.
+This milestone adds project inspection, create/update proposals, optimistic concurrency checks, and non-executing syntax validation. It does not yet run project build scripts, execute generated tests, or automatically repair compiler failures. Those capabilities require a separately isolated worker.
