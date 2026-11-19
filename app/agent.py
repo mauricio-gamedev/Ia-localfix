@@ -1,7 +1,6 @@
 import json
-import uuid
-
 import sqlite3
+import uuid
 
 
 def add_event(db: sqlite3.Connection, run_id: str, event_type: str, payload: dict) -> None:
