@@ -44,3 +44,7 @@ The inference/build host should be a capable desktop or Linux machine. Android d
 The initial generation API only creates new files inside a selected project workspace. It rejects absolute paths, traversal, symlink escapes, duplicate paths and overwrites. This foundation does not execute shell commands or generated code. Build execution will be introduced later through isolated, explicitly permissioned adapters.
 
 The assistant is intended to be viewpoint-neutral and configurable, while retaining safeguards for destructive actions, secrets, untrusted code and unauthorized activity.
+
+## Current milestone
+
+Initial planning and safe file-generation endpoints are implemented on the feature branch. Build workers, agent tool orchestration, and advanced memory retrieval remain future milestones.
