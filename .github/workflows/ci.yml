@@ -22,3 +22,21 @@ jobs:
         run: python -m pip install -e ".[dev]"
       - name: Test
         run: pytest
+
+
+  docker-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Verify Docker daemon
+        run: docker info
+      - name: Preload isolated Python builder image
+        run: docker pull python:3.12-slim
+      - name: Run real container integration smoke test
+        run: python scripts/verify_docker_worker.py
