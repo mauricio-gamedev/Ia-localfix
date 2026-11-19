@@ -270,11 +270,15 @@ def execute_build(root: Path, slug: str, profile_id: str, settings: Any, job_id:
         }
     _, project_dir = project_directory(root, slug)
     started = time.monotonic()
+    stage = "creating scratch workspace"
     try:
         with tempfile.TemporaryDirectory(prefix="ia-localfix-build-") as temp:
             workspace = Path(temp) / "workspace"
+            stage = "copying project into scratch workspace"
             _copy_workspace_for_build(project_dir, workspace)
+            stage = "preparing fixed Docker command"
             args = _container_args(settings.docker_binary, profile, workspace, settings)
+            stage = "launching Docker container"
             try:
                 completed = subprocess.run(
                     args, capture_output=True, text=True, errors="replace",
@@ -303,6 +307,7 @@ def execute_build(root: Path, slug: str, profile_id: str, settings: Any, job_id:
                 error = f"Docker executable '{settings.docker_binary}' was not found."
             artifacts = []
             if status == "succeeded":
+                stage = "collecting build artifacts"
                 artifacts = _collect_artifacts(
                     workspace, settings.artifact_root, job_id, profile.artifact_patterns
                 )
@@ -317,7 +322,7 @@ def execute_build(root: Path, slug: str, profile_id: str, settings: Any, job_id:
         return {
             "status": "failed", "exit_code": None,
             "duration_ms": int((time.monotonic() - started) * 1000),
-            "log": "", "error": str(exc)[:1000], "artifacts": [],
+            "log": "", "error": f"{stage}: {str(exc)[:900]}", "artifacts": [],
             "diagnostics": parse_build_diagnostics(profile_id, "failed", "", None),
         }
 
