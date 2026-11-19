@@ -25,8 +25,10 @@ def create_workspace(root: Path, slug: str) -> Path:
     return target
 
 
-def write_generated_files(root: Path, slug: str, files: list[dict]) -> list[dict]:
-    if not files or len(files) > MAX_GENERATED_FILES:
+def _prepare_generated_files(
+    root: Path, slug: str, files: list[dict]
+) -> tuple[Path, list[tuple[str, Path, str, int]]]:
+    if not isinstance(files, list) or not files or len(files) > MAX_GENERATED_FILES:
         raise ValueError(f"Generation must contain between 1 and {MAX_GENERATED_FILES} files.")
 
     workspace_root = root.expanduser().resolve()
@@ -41,11 +43,13 @@ def write_generated_files(root: Path, slug: str, files: list[dict]) -> list[dict
     total_bytes = 0
 
     for item in files:
+        if not isinstance(item, dict):
+            raise ValueError("Each generated file must be an object.")
         relative = item.get("path")
         content = item.get("content")
         if not isinstance(relative, str) or not isinstance(content, str):
             raise ValueError("Each generated file requires string path and content fields.")
-        if not relative or relative.startswith("/") or "\\" in relative or "\x00" in relative:
+        if not relative or relative.startswith("/") or "\\\\" in relative or "\\x00" in relative:
             raise ValueError("Generated file paths must be safe relative POSIX paths.")
 
         raw_parts = relative.split("/")
@@ -70,10 +74,33 @@ def write_generated_files(root: Path, slug: str, files: list[dict]) -> list[dict
             raise ValueError("Generated output exceeds the 1 MB project-file limit.")
         prepared.append((normalized, target, content, encoded_size))
 
+    return project_dir, prepared
+
+
+def validate_generated_files(root: Path, slug: str, files: list[dict]) -> list[dict]:
+    """Validate a proposed file set without writing anything to disk."""
+    _, prepared = _prepare_generated_files(root, slug, files)
+    return [
+        {"path": normalized, "size_bytes": encoded_size}
+        for normalized, _, _, encoded_size in prepared
+    ]
+
+
+def write_generated_files(root: Path, slug: str, files: list[dict]) -> list[dict]:
+    project_dir, prepared = _prepare_generated_files(root, slug, files)
     created: list[Path] = []
+    created_dirs: list[Path] = []
     try:
-        for normalized, target, content, encoded_size in prepared:
+        for normalized, target, content, _ in prepared:
+            missing = []
+            parent = target.parent
+            while parent != project_dir and not parent.exists():
+                missing.append(parent)
+                parent = parent.parent
             target.parent.mkdir(parents=True, exist_ok=True)
+            for directory in reversed(missing):
+                created_dirs.append(directory)
+
             resolved_parent = target.parent.resolve()
             if resolved_parent != project_dir and project_dir not in resolved_parent.parents:
                 raise ValueError("Generated file parent escapes the project workspace.")
@@ -83,6 +110,11 @@ def write_generated_files(root: Path, slug: str, files: list[dict]) -> list[dict
     except Exception:
         for path in reversed(created):
             path.unlink(missing_ok=True)
+        for directory in reversed(created_dirs):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
         raise
 
     return [
