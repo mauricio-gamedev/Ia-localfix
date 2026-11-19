@@ -104,7 +104,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     application = FastAPI(
         title="Ia-localfix API",
-        version="0.5.0",
+        version="0.6.0",
         description="Local-first AI software engineering control plane.",
         lifespan=lifespan,
     )

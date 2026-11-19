@@ -2,6 +2,8 @@
 
 Local-first AI software engineering agent.
 
+**Current milestone: v0.6.0 — build diagnostics and supervised repair cycles.**
+
 ## Implemented foundation
 
 - Python 3.12 + FastAPI control-plane API.
@@ -12,7 +14,10 @@ Local-first AI software engineering agent.
 - Non-executing syntax validation for Python, JSON, TOML and XML.
 - Pytest suite and GitHub Actions CI.
 - Persisted build jobs with explicit approval, event history, fixed server-side profiles, and downloadable build artifacts.
-- Docker execution with network disabled, read-only container root, dropped capabilities, no-new-privileges, non-root UID, CPU/memory/PID/time limits, and secret/cache exclusions from the scratch build copy.
+- Docker execution with network disabled, image pulls disabled, read-only container root, dropped capabilities, no-new-privileges, non-root API-service UID, CPU/memory/PID/time limits, and secret/cache exclusions from the scratch build copy.
+- Structured Python, Node TAP, Gradle compiler/task, generic build-failure, and timeout diagnostics extracted from bounded build logs.
+- Supervised build-repair cycles: AI-generated patch proposals, explicit file approval, parent/child build lineage, and a configurable iteration ceiling.
+- Live Docker worker integration smoke test in GitHub Actions, in addition to the mocked API/unit tests.
 
 ## Run locally
 
@@ -33,10 +38,11 @@ Set `OLLAMA_BASE_URL` and `OLLAMA_MODEL` to use a local Ollama instance. The API
 - `GET /v1/projects/{project_id}/inspect` (bounded file inventory and previews)
 - `POST /v1/projects/{project_id}/validate` (static syntax checks; no code execution)
 - `GET /v1/projects/{project_id}/build-profiles`
-- `POST /v1/projects/{project_id}/builds` (create a build proposal; does not execute)
+- `POST /v1/projects/{project_id}/builds` (create a build proposal; optional `parent_build_id` for an approved repair retry; does not execute)
 - `GET /v1/projects/{project_id}/builds`
 - `GET /v1/builds/{build_id}` and `/events`
 - `POST /v1/builds/{build_id}/approve` and `/reject`
+- `POST /v1/builds/{build_id}/repair` (propose a focused patch from build diagnostics; does not write files)
 - `GET /v1/builds/{build_id}/artifacts/{artifact_name}`
 - `POST /v1/projects`
 - `POST /v1/memory`
@@ -73,7 +79,7 @@ The assistant is intended to be viewpoint-neutral and configurable, while retain
 4. `POST /v1/agent/runs/{id}/approve` atomically claims an awaiting run and applies the new files once. `reject` records rejection without writing.
 5. Runs and events remain in SQLite for later inspection.
 
-This milestone adds project inspection, create/update proposals, optimistic concurrency checks, non-executing syntax validation after approval, and a diagnostics-driven repair proposal endpoint. A repair is always a new proposal and still requires approval. The API can now run only the fixed build profiles described above. It does not provide unrestricted shell access, network package installation, arbitrary command parameters, or automatic repair from real build/test diagnostics.
+This milestone adds project inspection, create/update proposals, optimistic concurrency checks, non-executing syntax validation after approval, and a diagnostics-driven repair proposal endpoint. A repair is always a new proposal and still requires approval. The API can run only the fixed build profiles described above. Failed build logs are parsed into structured diagnostics. `POST /v1/builds/{id}/repair` uses those diagnostics plus the current workspace snapshot to create an ordinary agent-run proposal. The patch still requires explicit approval through `/v1/agent/runs/{run_id}/approve`; only then can the client create a child build with `parent_build_id`. Each failed build can produce one repair proposal, each retry must descend from the same build cycle and use the same profile, and the server enforces `IA_MAX_REPAIR_ITERATIONS` (default 2, supported range 1–5). This is supervised automation, not an unattended code-writing loop.
 
 
 ## Build execution configuration
@@ -89,5 +95,17 @@ The Docker daemon runs on the API host. Configure resource limits and builder im
 - IA_BUILD_CPUS (default 2.0)
 - IA_BUILD_PIDS_LIMIT (default 128)
 - IA_ARTIFACT_ROOT (default ./artifacts)
+- IA_MAX_REPAIR_ITERATIONS (default 2; configurable from 1 to 5)
 
 All builder images must be pre-pulled into the local Docker daemon. Android builder images must be pre-provisioned with a compatible JDK, Android SDK/build-tools, and a complete Gradle dependency/wrapper cache stored at `/opt/ia-gradle-cache`. At runtime the worker copies that image cache into the disposable workspace, then runs Gradle offline against the copy. Python and Node profiles are shown only when their supported test files are discoverable; an empty test suite is not reported as a passing test run. A successful command is evidence of that specific profile only; it is not a blanket guarantee that every supported device or release variant is ready.
+
+
+## Supervised repair cycle
+
+1. A failed or timed-out build returns `result.diagnostics` with normalized workspace-relative paths where the toolchain exposes them.
+2. Call `POST /v1/builds/{build_id}/repair` to create a patch proposal using those diagnostics, the bounded log tail and the current inspected source snapshot.
+3. Review the generated files and approve the associated agent run. The repair endpoint never writes project files by itself.
+4. Create the next build with the same `profile_id` and `parent_build_id` set to the failed build ID, then approve that build job separately.
+5. Build jobs share a cycle ID and increment an iteration counter. The server rejects a retry unless the preceding repair was approved and applied, rejects duplicate children, and stops after the configured iteration limit.
+
+A repair proposal can itself be rejected. The workflow does not continue automatically after a failure, timeout, or rejection; the user controls each file-application and build-execution approval.

@@ -44,12 +44,22 @@ The build worker copies the project into a temporary scratch workspace, skipping
 
 The initial build profiles use Python unittest, Node's built-in node --test, and offline Android Gradle assemble/unit-test tasks. Python/Node profiles require discoverable test files so an empty test run cannot report success. Android builder images must contain a pre-populated Gradle wrapper/dependency cache at `/opt/ia-gradle-cache`; the fixed worker command copies it into the temporary workspace before invoking Gradle offline. Android profiles require a server-configured builder image; that image must already contain its SDK/toolchains and dependency caches. There is no automatic network-enabled dependency resolution. This initial worker is a hardened baseline, not a substitute for a dedicated VM/microVM boundary against kernel/container-runtime vulnerabilities; Docker daemon access remains a privileged host capability and the API should remain loopback-bound until authentication is implemented.
 
+## Build diagnostics and supervised repair cycles
+
+Build results include a bounded structured diagnostics array in addition to the raw bounded log tail. Known Python traceback frames, Node TAP file locations, Kotlin/Gradle compiler messages, failed Gradle tasks, generic test failures and timeouts are normalized into severity/category/message/path/line/column records. A source path is exposed only when it can be normalized beneath `/workspace`; arbitrary absolute host paths are not returned as project locations.
+
+A failed build can create at most one repair proposal. The model receives the current bounded workspace snapshot, parsed diagnostics and a limited log tail; build output and repository content are explicitly treated as untrusted data. The proposal is stored as a normal `agent_run` and must be approved using the existing file-application approval endpoint. The next build request must reference its failed parent build; the API verifies that the linked repair run is completed, the build profile is unchanged, and no retry child already exists. Build rows track `cycle_id`, `iteration` and `parent_build_id`; a database migration adds these fields to existing v0.5 databases and backfills each legacy job as a root cycle.
+
+The configured maximum defaults to two retry iterations and is restricted to one through five. A proposal or build rejection does not trigger automatic continuation. This preserves bounded, auditable, user-supervised repair rather than an unattended loop that repeatedly edits and executes generated code.
+
+GitHub Actions has two jobs: deterministic API/unit tests and a live Docker integration smoke test. The latter preloads a Python builder image and executes a known one-test fixture via the same worker in a real container; it validates the isolation/cleanup path, not Android Gradle or arbitrary model-generated project success.
+
 ## Planned agent execution
 
-1. Add toolchain-specific result parsers and richer compiler/test diagnostics.
-2. Extend repair proposals to approved build/test diagnostics and bounded repair iteration controls.
+1. Add richer toolchain-specific parsers and test-report/artifact metadata for additional languages.
+2. Add authentication, authorization and rate/queue limits before any non-loopback deployment.
 3. Improve memory with ranking, summarization/compaction, retention controls and user-editable decisions.
-4. Add authentication before any non-loopback deployment.
+4. Evaluate stronger VM/microVM isolation for higher-risk multi-tenant execution.
 
 ## Security invariants
 
