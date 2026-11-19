@@ -10,7 +10,8 @@ The API is the control plane. Model inference is delegated to a replaceable prov
 - `app/config.py`: environment-backed settings.
 - `app/database.py`: SQLite connection and schema initialization.
 - `app/inference.py`: Ollama chat and schema-constrained file generation.
-- `app/workspaces.py`: normalized project slugs, path containment and bounded file writes.
+- `app/workspaces.py`: normalized project slugs, bounded text inspection, path containment, SHA-256 snapshots and safe create/update writes.
+- `app/validation.py`: non-executing AST/JSON/TOML/XML validation.
 - `app/schemas.py`: request and response contracts.
 
 ## Memory strategy
@@ -27,14 +28,17 @@ The agent creates a typed proposal containing a summary, implementation plan, or
 
 If the process restarts while a run is `applying`, the run is marked failed and requires workspace inspection rather than automatic replay.
 
+## Workspace inspection and static validation
+
+The inspection endpoint returns a bounded text-only inventory, SHA-256 fingerprints and previews. It skips symlinks, common build/cache/VCS directories, environment files and key material. The model receives a bounded source snapshot; the API response does not expose full file contents. Static validation parses Python AST, JSON, TOML and XML without importing or executing project code. Unsupported toolchains are reported through markers, not misrepresented as built or tested.
+
 ## Planned agent execution
 
-1. Inspect existing project files and map the build environment.
-2. Add a bounded tool-call loop for inspect, propose, validate and revise operations.
-3. Integrate allowlisted build/test adapters in an isolated worker.
-4. Capture logs, artifacts, test results and compiler diagnostics as project events.
-5. Add controlled repair iterations that create a new proposal for review.
-6. Improve memory with ranking, summarization/compaction, retention controls and user-editable decisions.
+1. Add structured repair proposals based on static diagnostics.
+2. Integrate allowlisted build/test adapters in an isolated worker.
+3. Capture logs, artifacts, test results and compiler diagnostics as project events.
+4. Add bounded repair iterations that create a new proposal for review.
+5. Improve memory with ranking, summarization/compaction, retention controls and user-editable decisions.
 
 ## Security invariants
 
