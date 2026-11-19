@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.build_diagnostics import parse_build_diagnostics
+from app.build_diagnostics import parse_build_diagnostics
 from app.workspaces import SKIP_DIRS, project_directory
 
 MAX_BUILD_SOURCE_BYTES = 250_000_000
@@ -231,7 +232,7 @@ def _container_args(docker_binary: str, profile: BuildProfile, workspace: Path, 
     if not IMAGE_REF.fullmatch(profile.image):
         raise ValueError("Configured builder image reference is invalid.")
     if not 1 <= settings.build_timeout_seconds <= 1800:
-        raise ValueError("Build timeout must be between 30 and 1800 seconds.")
+        raise ValueError("Build timeout must be between 1 and 1800 seconds.")
     if "," in str(workspace) or "\n" in str(workspace) or "\r" in str(workspace):
         raise ValueError("Temporary workspace path contains unsupported mount characters.")
     if not settings.docker_binary.strip():
@@ -243,7 +244,7 @@ def _container_args(docker_binary: str, profile: BuildProfile, workspace: Path, 
     return [
         docker_binary, "run", "--rm", "--pull=never", "--network=none",
         "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
-        "--security-opt=seccomp=default", "--ulimit", "nofile=1024:1024",
+        "--ulimit", "nofile=1024:1024",
         "--pids-limit", str(settings.build_pids_limit),
         "--memory", settings.build_memory_limit, "--memory-swap", settings.build_memory_limit,
         "--cpus", str(settings.build_cpus), "--user", "10001:10001",

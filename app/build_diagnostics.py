@@ -9,7 +9,9 @@ MAX_DIAGNOSTICS = 100
 MAX_MESSAGE_CHARS = 2_000
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 PYTHON_FRAME_RE = re.compile(r'File ["\'](?P<path>/workspace/[^"\']+)["\'], line (?P<line>\d+)')
-NODE_LOCATION_RE = re.compile(r"location:\s*file://(?P<path>/workspace/[^:\s]+):(?P<line>\d+):(?P<column>\d+)")
+NODE_LOCATION_RE = re.compile(
+    r"""location:\s*['"]?file://(?P<path>/workspace/[^:'"\s]+):(?P<line>\d+):(?P<column>\d+)"""
+)
 GRADLE_KOTLIN_RE = re.compile(r"(?P<path>file:///workspace/[^:\s]+):\s*\((?P<line>\d+),\s*(?P<column>\d+)\):\s*(?P<message>.+)")
 GRADLE_COMPILER_RE = re.compile(r"(?P<path>file:///workspace/[^:\s]+):(?P<line>\d+):(?P<column>\d+):\s*error:\s*(?P<message>.+)")
 GRADLE_TASK_RE = re.compile(r"> Task (?P<task>:[A-Za-z0-9_:-]+) FAILED")
