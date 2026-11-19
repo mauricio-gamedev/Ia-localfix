@@ -18,11 +18,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install
+      - name: Install API
         run: python -m pip install -e ".[dev]"
-      - name: Test
+      - name: Test API
         run: pytest
-
 
   docker-integration:
     runs-on: ubuntu-latest
@@ -32,7 +31,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install
+      - name: Install API
         run: python -m pip install -e ".[dev]"
       - name: Verify Docker daemon
         run: docker info
@@ -40,3 +39,31 @@ jobs:
         run: docker pull python:3.12-slim
       - name: Run real container integration smoke test
         run: python scripts/verify_docker_worker.py
+
+  android-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK components
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - name: Assemble debug APK
+        working-directory: android
+        run: gradle --no-daemon assembleDebug
+      - name: Generate APK checksum
+        run: sha256sum android/app/build/outputs/apk/debug/app-debug.apk > android/app/build/outputs/apk/debug/app-debug.apk.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ia-localfix-debug-apk
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/apk/debug/app-debug.apk.sha256
+          if-no-files-found: error
+          retention-days: 14
