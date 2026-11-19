@@ -534,7 +534,9 @@ def test_build_profiles_detect_available_toolchains_and_gate_android_image(tmp_p
         (root / "src").mkdir()
         (root / "src" / "main.py").write_text("def main(): return 0\n")
         (root / "tests").mkdir()
+        (root / "tests" / "__init__.py").write_text("")
         (root / "tests" / "test_smoke.py").write_text("import unittest\n")
+        (root / "tests" / "smoke.test.js").write_text("import test from 'node:test';\n")
         (root / "package.json").write_text('{"name":"demo","scripts":{"test":"node --test"}}')
         (root / "gradlew").write_text("#!/bin/sh\nexit 0\n")
         (root / "build.gradle.kts").write_text("plugins { id(\"com.android.application\") }\n")
@@ -689,6 +691,7 @@ def test_build_job_recovery_marks_running_job_interrupted(tmp_path):
         project = client.post("/v1/projects", json={"name": "Interrupted Build"}).json()
         root = tmp_path / "workspaces" / "interrupted-build"
         (root / "main.py").write_text("pass\n")
+        (root / "test_main.py").write_text("import unittest\n")
         job = client.post(
             f"/v1/projects/{project['id']}/builds",
             json={"profile_id": "python-unittest"},
@@ -733,6 +736,7 @@ def test_android_artifact_is_saved_and_downloadable(tmp_path, monkeypatch):
     with make_client(tmp_path) as client:
         project = client.post("/v1/projects", json={"name": "Artifact Test"}).json()
         (tmp_path / "workspaces" / "artifact-test" / "src.py").write_text("pass\n")
+        (tmp_path / "workspaces" / "artifact-test" / "test_app.py").write_text("import unittest\n")
         created = client.post(
             f"/v1/projects/{project['id']}/builds",
             json={"profile_id": "python-unittest"},
