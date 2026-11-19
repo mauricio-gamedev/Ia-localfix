@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -249,10 +248,13 @@ private fun LocalfixApp() {
     fun testConnection(url: String, token: String) {
         scope.launch {
             busy = true
-            settingsNotice = "Checking API health..."
+            settingsNotice = "Checking API and authentication..."
             try {
-                val result = ApiClient(url, token).health()
-                settingsNotice = if (result == "ok") "API is reachable." else "API replied: " + result
+                val tokenToTest = if (token.isBlank() && apiToken.isNotBlank()) apiToken else token
+                val testApi = ApiClient(url, tokenToTest)
+                val health = testApi.health()
+                val projectCount = testApi.listProjects().size
+                settingsNotice = "Connected: " + health + " · " + projectCount + " project(s) found. Authentication accepted."
             } catch (error: Exception) {
                 settingsNotice = error.message ?: "Connection test failed."
             } finally {
