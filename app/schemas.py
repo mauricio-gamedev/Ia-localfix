@@ -48,3 +48,58 @@ class GenerateResponse(BaseModel):
     model: str
     project_id: str
     files: list[GeneratedFile]
+
+
+class AgentRunCreate(BaseModel):
+    request: str = Field(min_length=5, max_length=12_000)
+    project_id: str
+
+
+class AgentStep(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    description: str = Field(min_length=1, max_length=1_000)
+
+
+class AgentProposedFile(BaseModel):
+    path: str = Field(min_length=1, max_length=240)
+    content: str = Field(max_length=1_000_000)
+
+
+class AgentProposal(BaseModel):
+    summary: str = Field(min_length=1, max_length=1_000)
+    plan: str = Field(min_length=1, max_length=8_000)
+    steps: list[AgentStep] = Field(min_length=1, max_length=12)
+    files: list[AgentProposedFile] = Field(min_length=1, max_length=30)
+
+
+class AgentFilePreview(BaseModel):
+    path: str
+    size_bytes: int
+    preview: str
+
+
+class AgentRunResponse(BaseModel):
+    id: str
+    project_id: str
+    status: str
+    model: str
+    request: str
+    summary: str
+    plan: str
+    steps: list[AgentStep]
+    files: list[AgentFilePreview]
+    error: str | None
+    created_at: str
+    updated_at: str
+    completed_at: str | None
+
+
+class AgentRejectRequest(BaseModel):
+    reason: str = Field(default="Rejected by user.", min_length=1, max_length=500)
+
+
+class AgentEventResponse(BaseModel):
+    id: str
+    event_type: str
+    payload: dict
+    created_at: str
