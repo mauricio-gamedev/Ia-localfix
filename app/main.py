@@ -2,6 +2,7 @@ import asyncio
 import json
 import sqlite3
 import uuid
+from pathlib import Path
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, status
@@ -66,6 +67,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         initialize(config.database_path)
         # Never replay an interrupted write automatically after a process restart.
         with connect(config.database_path) as db:
+            interrupted_builds = db.execute(
+                "SELECT id FROM build_jobs WHERE status = 'running'"
+            ).fetchall()
+            for item in interrupted_builds:
+                db.execute(
+                    """UPDATE build_jobs SET status = 'failed',
+                       error = 'Build was interrupted by an API process restart.',
+                       updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP
+                       WHERE id = ?""",
+                    (item["id"],),
+                )
+                add_build_event(
+                    db,
+                    item["id"],
+                    "build_interrupted",
+                    {"message": "API restarted while the container build was running; retry with a new job."},
+                )
             interrupted = db.execute(
                 "SELECT id FROM agent_runs WHERE status = 'applying'"
             ).fetchall()
@@ -791,14 +809,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 {"message": "User approved execution of the fixed server-side build profile."},
             )
 
-        result = await asyncio.to_thread(
-            execute_build,
-            config.workspace_root,
-            project["slug"],
-            row["profile_id"],
-            config,
-            build_id,
-        )
+        try:
+            result = await asyncio.to_thread(
+                execute_build,
+                config.workspace_root,
+                project["slug"],
+                row["profile_id"],
+                config,
+                build_id,
+            )
+        except Exception as exc:
+            result = {
+                "status": "failed",
+                "exit_code": None,
+                "duration_ms": 0,
+                "log": "",
+                "error": f"Build runner failed unexpectedly: {str(exc)[:500]}",
+                "artifacts": [],
+            }
         with connect(config.database_path) as db:
             db.execute(
                 """UPDATE build_jobs SET status = ?, result_json = ?, error = ?,
