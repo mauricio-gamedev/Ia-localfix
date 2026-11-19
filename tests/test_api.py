@@ -533,6 +533,8 @@ def test_build_profiles_detect_available_toolchains_and_gate_android_image(tmp_p
         root = tmp_path / "workspaces" / "build-profiles"
         (root / "src").mkdir()
         (root / "src" / "main.py").write_text("def main(): return 0\n")
+        (root / "tests").mkdir()
+        (root / "tests" / "test_smoke.py").write_text("import unittest\n")
         (root / "package.json").write_text('{"name":"demo","scripts":{"test":"node --test"}}')
         (root / "gradlew").write_text("#!/bin/sh\nexit 0\n")
         (root / "build.gradle.kts").write_text("plugins { id(\"com.android.application\") }\n")
@@ -675,10 +677,9 @@ def test_android_wrapper_uses_sh_and_server_configured_image():
     settings = Settings(android_builder_image="registry.example/android-sdk:35")
     profiles = profile_registry(settings)
 
-    assert profiles["android-debug"].command == (
-        "sh", "./gradlew", "--no-daemon", "--offline", "assembleDebug"
-    )
-    assert profiles["android-unit-tests"].command[-1] == "testDebugUnitTest"
+    assert profiles["android-debug"].command[:2] == ("sh", "-c")
+    assert "/opt/ia-gradle-cache" in profiles["android-debug"].command[2]
+    assert profiles["android-unit-tests"].command[2].endswith("testDebugUnitTest")
 
 
 def test_build_job_recovery_marks_running_job_interrupted(tmp_path):
@@ -745,3 +746,39 @@ def test_android_artifact_is_saved_and_downloadable(tmp_path, monkeypatch):
     assert download.status_code == 200
     assert download.content == b"apk-test-data"
     assert download.headers["content-type"] == "application/vnd.android.package-archive"
+
+
+def test_build_profiles_do_not_offer_empty_test_runs(tmp_path):
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "No Tests"}).json()
+        root = tmp_path / "workspaces" / "no-tests"
+        (root / "main.py").write_text("def app(): return True\n")
+        (root / "package.json").write_text('{"name":"no-tests"}')
+        (root / "src.js").write_text("export const value = 1;\n")
+
+        response = client.get(f"/v1/projects/{project['id']}/build-profiles")
+
+    by_id = {item["id"]: item for item in response.json()}
+    assert by_id["python-unittest"]["available"] is False
+    assert "test_*.py" in by_id["python-unittest"]["reason"]
+    assert by_id["node-test"]["available"] is False
+
+
+def test_node_profile_requires_discoverable_test_file(tmp_path):
+    from app.builds import get_build_profiles
+    from app.config import Settings
+
+    root = tmp_path / "workspaces"
+    project = root / "node-project"
+    project.mkdir(parents=True)
+    (project / "package.json").write_text('{"name":"node-project"}')
+    (project / "src.js").write_text("export const value = 1;\n")
+    settings = Settings(workspace_root=root)
+
+    before = {item["id"]: item for item in get_build_profiles(root, "node-project", settings)}
+    assert before["node-test"]["available"] is False
+
+    (project / "tests").mkdir()
+    (project / "tests" / "math.test.js").write_text("import test from 'node:test';\n")
+    after = {item["id"]: item for item in get_build_profiles(root, "node-project", settings)}
+    assert after["node-test"]["available"] is True

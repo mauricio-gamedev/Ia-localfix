@@ -56,8 +56,8 @@ def profile_registry(settings: Any) -> dict[str, BuildProfile]:
             "android-debug", "Android debug APK",
             "Run the Gradle wrapper offline and collect APK/AAB outputs.",
             settings.android_builder_image,
-            ("sh", "./gradlew", "--no-daemon", "--offline", "assembleDebug"),
-            "sh ./gradlew --no-daemon --offline assembleDebug",
+            ("sh", "-c", "mkdir -p /workspace/.gradle && cp -a /opt/ia-gradle-cache/. /workspace/.gradle/ && exec sh ./gradlew --no-daemon --offline --gradle-user-home /workspace/.gradle assembleDebug"),
+            "sh ./gradlew --no-daemon --offline assembleDebug (preloaded /opt/ia-gradle-cache)",
             "Gradle wrapper plus an Android SDK builder image with dependencies preloaded.",
             ("**/build/outputs/**/*.apk", "**/build/outputs/**/*.aab"),
         ),
@@ -65,8 +65,8 @@ def profile_registry(settings: Any) -> dict[str, BuildProfile]:
             "android-unit-tests", "Android unit tests",
             "Run Gradle debug unit tests offline.",
             settings.android_builder_image,
-            ("sh", "./gradlew", "--no-daemon", "--offline", "testDebugUnitTest"),
-            "sh ./gradlew --no-daemon --offline testDebugUnitTest",
+            ("sh", "-c", "mkdir -p /workspace/.gradle && cp -a /opt/ia-gradle-cache/. /workspace/.gradle/ && exec sh ./gradlew --no-daemon --offline --gradle-user-home /workspace/.gradle testDebugUnitTest"),
+            "sh ./gradlew --no-daemon --offline testDebugUnitTest (preloaded /opt/ia-gradle-cache)",
             "Gradle wrapper plus an Android SDK builder image with dependencies preloaded.",
         ),
     }
@@ -81,27 +81,51 @@ def _is_secret(path: Path) -> bool:
     )
 
 
+def _project_files(project_dir: Path):
+    for path in project_dir.rglob("*"):
+        relative = path.relative_to(project_dir)
+        if (
+            path.is_file()
+            and not path.is_symlink()
+            and not any(part.lower() in SKIP_DIRS for part in relative.parts)
+        ):
+            yield path, relative
+
+
 def get_build_profiles(root: Path, slug: str, settings: Any) -> list[dict]:
     _, project_dir = project_directory(root, slug)
-    has_python = any(
-        path.suffix.lower() in {".py", ".pyi"}
-        for path in project_dir.rglob("*")
-        if path.is_file() and not path.is_symlink()
-        and not any(part.lower() in SKIP_DIRS for part in path.relative_to(project_dir).parts)
+    files = list(_project_files(project_dir))
+    has_python_tests = any(
+        path.suffix.lower() == ".py" and path.name.startswith("test")
+        for path, _ in files
     )
-    has_node = (project_dir / "package.json").is_file()
+    has_node_tests = any(
+        path.suffix.lower() in {".js", ".cjs", ".mjs"}
+        and (
+            path.name == "test.js"
+            or path.name.startswith("test-")
+            or path.name.endswith(("-test.js", "_test.js", ".test.js", ".spec.js",
+                                   "-test.cjs", "_test.cjs", ".test.cjs", ".spec.cjs",
+                                   "-test.mjs", "_test.mjs", ".test.mjs", ".spec.mjs"))
+            or any(part.lower() in {"test", "tests"} for part in relative.parts[:-1])
+        )
+        for path, relative in files
+    )
+    has_node_package = (project_dir / "package.json").is_file()
     has_wrapper = (project_dir / "gradlew").is_file()
     has_gradle = any(
-        (project_dir / name).is_file()
-        for name in ("build.gradle", "build.gradle.kts")
-    ) or any(
         path.name in {"build.gradle", "build.gradle.kts"}
-        and not any(part.lower() in SKIP_DIRS for part in path.relative_to(project_dir).parts)
-        for path in project_dir.rglob("*") if path.is_file() and not path.is_symlink()
+        for path, _ in files
     )
     available = {
-        "python-unittest": (has_python and bool(settings.python_builder_image), "No Python source files or Python builder image were found."),
-        "node-test": (has_node and bool(settings.node_builder_image), "No package.json or Node builder image was found."),
+        "python-unittest": (
+            has_python_tests and bool(settings.python_builder_image),
+            "No unittest-discoverable test_*.py files or Python builder image were found.",
+        ),
+        "node-test": (
+            has_node_package and has_node_tests and bool(settings.node_builder_image),
+            "Requires package.json, discoverable Node test files, and a Node builder image.",
+        ),
         "android-debug": (
             has_wrapper and has_gradle and bool(settings.android_builder_image),
             "Requires gradlew, a Gradle build file, and IA_ANDROID_BUILDER_IMAGE.",
@@ -126,7 +150,6 @@ def get_build_profiles(root: Path, slug: str, settings: Any) -> list[dict]:
             "available": enabled, "reason": None if enabled else reason,
         })
     return output
-
 
 def _copy_workspace_for_build(source: Path, destination: Path) -> None:
     """Copy project input into scratch, excluding secrets, symlinks and caches."""
