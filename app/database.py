@@ -42,6 +42,35 @@ def initialize(database_path: Path) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_memories_project
                 ON memories(project_id);
+
+            CREATE TABLE IF NOT EXISTS agent_runs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                request TEXT NOT NULL,
+                model TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (
+                    status IN ('awaiting_approval', 'applying', 'completed', 'rejected', 'failed')
+                ),
+                proposal_json TEXT NOT NULL,
+                error TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_runs_project
+                ON agent_runs(project_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS agent_events (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_events_run
+                ON agent_events(run_id, created_at);
             """
         )
         try:
