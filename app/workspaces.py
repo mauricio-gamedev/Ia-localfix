@@ -312,11 +312,12 @@ def apply_generated_changes(root: Path, slug: str, changes: list[dict]) -> list[
 
             data = item["content"].encode("utf-8")
             if item["operation"] == "create":
-                with target.open("xb") as handle:
+                handle = target.open("xb")
+                created.append(target)
+                with handle:
                     handle.write(data)
                     handle.flush()
                     os.fsync(handle.fileno())
-                created.append(target)
             else:
                 if target.is_symlink() or not target.is_file():
                     raise ValueError(f"File target is no longer a regular file: {item['path']}")
@@ -326,7 +327,11 @@ def apply_generated_changes(root: Path, slug: str, changes: list[dict]) -> list[
                     raise ValueError(f"File changed during approval: {item['path']}")
                 updated.append((target, original))
                 temp_path = _write_temp(target, data)
-                os.replace(temp_path, target)
+                try:
+                    os.replace(temp_path, target)
+                except Exception:
+                    temp_path.unlink(missing_ok=True)
+                    raise
 
     except Exception:
         for path in reversed(created):
@@ -361,8 +366,16 @@ def apply_generated_changes(root: Path, slug: str, changes: list[dict]) -> list[
 
 def write_generated_files(root: Path, slug: str, files: list[dict]) -> list[dict]:
     """Compatibility wrapper for the explicit create-only generation endpoint."""
+    if not isinstance(files, list):
+        raise ValueError("Generated files must be a list.")
     create_changes = [
-        {"path": item.get("path"), "content": item.get("content"), "operation": "create"}
+        {
+            "path": item.get("path"),
+            "content": item.get("content"),
+            "operation": "create",
+        }
+        if isinstance(item, dict)
+        else item
         for item in files
     ]
     validate_generated_files(root, slug, create_changes)
