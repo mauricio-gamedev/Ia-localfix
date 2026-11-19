@@ -28,7 +28,9 @@ from app.schemas import (
     PlanResponse,
     ProjectCreate,
     ProjectOut,
+    ProjectValidationResponse,
 )
+from app.validation import validate_project
 from app.workspaces import (
     apply_generated_changes,
     create_workspace,
@@ -155,6 +157,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "total_bytes": snapshot["total_bytes"],
             "project_markers": snapshot["project_markers"],
         }
+
+    @application.post(
+        "/v1/projects/{project_id}/validate",
+        response_model=ProjectValidationResponse,
+    )
+    async def validate_project_files(project_id: str):
+        with connect(config.database_path) as db:
+            project = db.execute(
+                "SELECT id, slug FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found.")
+        try:
+            result = validate_project(config.workspace_root, project["slug"])
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"project_id": project_id, **result}
 
     @application.post("/v1/memory", response_model=MemoryOut, status_code=status.HTTP_201_CREATED)
     async def save_memory(payload: MemoryCreate):
