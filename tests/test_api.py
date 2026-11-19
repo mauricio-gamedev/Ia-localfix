@@ -525,3 +525,144 @@ def test_agent_can_create_repair_proposal_from_static_diagnostics(tmp_path, monk
     assert validation.json()["success"] is True
     repaired = (tmp_path / "workspaces" / "repair-loop" / "broken.py").read_text()
     assert repaired == "def fixed():" + chr(10) + "    return True" + chr(10)
+
+
+def test_build_profiles_detect_available_toolchains_and_gate_android_image(tmp_path):
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Build Profiles"}).json()
+        root = tmp_path / "workspaces" / "build-profiles"
+        (root / "src").mkdir()
+        (root / "src" / "main.py").write_text("def main(): return 0\n")
+        (root / "package.json").write_text('{"name":"demo","scripts":{"test":"node --test"}}')
+        (root / "gradlew").write_text("#!/bin/sh\nexit 0\n")
+        (root / "build.gradle.kts").write_text("plugins { id(\"com.android.application\") }\n")
+        profiles = client.get(f"/v1/projects/{project['id']}/build-profiles")
+
+    assert profiles.status_code == 200
+    by_id = {item["id"]: item for item in profiles.json()}
+    assert by_id["python-unittest"]["available"] is True
+    assert by_id["node-test"]["available"] is True
+    assert by_id["android-debug"]["available"] is False
+    assert "IA_ANDROID_BUILDER_IMAGE" in by_id["android-debug"]["reason"]
+
+
+def test_build_job_requires_approval_and_is_audited(tmp_path, monkeypatch):
+    import app.main
+
+    def fake_build(_root, _slug, _profile, _settings, _job_id):
+        return {
+            "status": "succeeded",
+            "exit_code": 0,
+            "duration_ms": 12,
+            "log": "2 tests passed",
+            "error": None,
+            "artifacts": [],
+        }
+
+    monkeypatch.setattr(app.main, "execute_build", fake_build)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Build Approval"}).json()
+        (tmp_path / "workspaces" / "build-approval" / "test_demo.py").write_text(
+            "import unittest\nclass Demo(unittest.TestCase):\n def test_ok(self): self.assertTrue(True)\n"
+        )
+        created = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "python-unittest"},
+        )
+        assert created.status_code == 201
+        job = created.json()
+        assert job["status"] == "awaiting_approval"
+
+        events = client.get(f"/v1/builds/{job['id']}/events").json()
+        assert [item["event_type"] for item in events] == [
+            "build_proposed",
+            "awaiting_approval",
+        ]
+
+        approved = client.post(f"/v1/builds/{job['id']}/approve")
+        assert approved.status_code == 200
+        assert approved.json()["status"] == "succeeded"
+        assert approved.json()["result"]["log"] == "2 tests passed"
+        assert client.post(f"/v1/builds/{job['id']}/approve").status_code == 409
+
+
+def test_build_profile_rejects_unavailable_or_unrecognized_profile(tmp_path):
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Build Reject"}).json()
+        unavailable = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "android-debug"},
+        )
+        unknown = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "execute-anything"},
+        )
+
+    assert unavailable.status_code == 422
+    assert unknown.status_code == 422
+
+
+def test_docker_runner_uses_fixed_offline_hardened_argument_vector(tmp_path, monkeypatch):
+    import subprocess
+    from app.builds import execute_build
+
+    root = tmp_path / "workspaces"
+    project = root / "runner-test"
+    project.mkdir(parents=True)
+    (project / "test_demo.py").write_text(
+        "import unittest\nclass Demo(unittest.TestCase):\n def test_ok(self): self.assertTrue(True)\n"
+    )
+    (project / ".env").write_text("SECRET=must-not-be-mounted")
+    settings = Settings(
+        database_path=tmp_path / "db" / "test.sqlite3",
+        workspace_root=root,
+        artifact_root=tmp_path / "artifacts",
+        python_builder_image="python:3.12-slim",
+    )
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        mount = next(item for item in args if item.startswith("type=bind,source="))
+        source = Path(mount.split("source=", 1)[1].split(",target=", 1)[0])
+        assert (source / "test_demo.py").is_file()
+        assert not (source / ".env").exists()
+        return subprocess.CompletedProcess(args, 0, "Ran 1 test\n", "")
+
+    monkeypatch.setattr("app.builds.subprocess.run", fake_run)
+    result = execute_build(root, "runner-test", "python-unittest", settings, "build-123")
+
+    args = captured["args"]
+    assert result["status"] == "succeeded"
+    assert "--network=none" in args
+    assert "--read-only" in args
+    assert "--cap-drop=ALL" in args
+    assert "--security-opt=no-new-privileges" in args
+    assert "--user" in args and args[args.index("--user") + 1] == "10001:10001"
+    assert args[-6:] == ["python:3.12-slim", "python", "-m", "unittest", "discover", "-v"]
+    assert captured["kwargs"]["timeout"] == 900
+    assert "shell" not in captured["kwargs"]
+
+
+def test_build_timeout_is_recorded_and_not_retried(tmp_path, monkeypatch):
+    import subprocess
+    from app.builds import execute_build
+
+    root = tmp_path / "workspaces"
+    (root / "timeout-project").mkdir(parents=True)
+    (root / "timeout-project" / "main.py").write_text("pass\n")
+    settings = Settings(
+        database_path=tmp_path / "db" / "test.sqlite3",
+        workspace_root=root,
+        build_timeout_seconds=2,
+    )
+
+    def fake_run(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("docker", 2, output="still running")
+
+    monkeypatch.setattr("app.builds.subprocess.run", fake_run)
+    result = execute_build(root, "timeout-project", "python-unittest", settings, "timeout-1")
+    assert result["status"] == "timed_out"
+    assert result["error"] == "Build exceeded the 2-second timeout."
+    assert result["log"] == "still running"
