@@ -18,6 +18,7 @@ from app.schemas import (
     AgentEventResponse,
     ProjectInspectionResponse,
     AgentRejectRequest,
+    AgentRepairRequest,
     AgentRunCreate,
     AgentRunResponse,
     GenerateRequest,
@@ -364,6 +365,126 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ).fetchone()
         return run_response(row)
 
+    @application.post(
+        "/v1/agent/runs/{run_id}/repair",
+        response_model=AgentRunResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def repair_agent_run(run_id: str, payload: AgentRepairRequest):
+        with connect(config.database_path) as db:
+            source_run = db.execute(
+                """SELECT r.*, p.name AS project_name, p.slug
+                   FROM agent_runs r JOIN projects p ON p.id = r.project_id
+                   WHERE r.id = ?""",
+                (run_id,),
+            ).fetchone()
+            if not source_run:
+                raise HTTPException(status_code=404, detail="Agent run not found.")
+            if source_run["status"] not in {"completed", "failed"}:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Only completed or failed agent runs can start a repair proposal.",
+                )
+            memories = db.execute(
+                """SELECT content FROM memories WHERE project_id = ?
+                   ORDER BY created_at DESC LIMIT 8""",
+                (source_run["project_id"],),
+            ).fetchall()
+
+        try:
+            validation = validate_project(config.workspace_root, source_run["slug"])
+            if validation["error_count"] == 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail="No supported static validation errors were found to repair.",
+                )
+            snapshot = inspect_workspace(config.workspace_root, source_run["slug"])
+        except HTTPException:
+            raise
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        repair_request = (
+            "Repair the following static validation errors in this existing project. "
+            "Preserve unrelated behavior and architecture. Original request: "
+            + source_run["request"]
+        )
+        if payload.instructions:
+            repair_request += "\\nAdditional user instructions: " + payload.instructions
+        repair_request += (
+            "\\nCurrent diagnostics: "
+            + json.dumps(validation["diagnostics"], ensure_ascii=False)
+        )
+        project_context = {
+            "project_name": source_run["project_name"],
+            "recent_project_memory": [row["content"] for row in memories],
+            "project_markers": snapshot["project_markers"],
+            "existing_files": [
+                {
+                    "path": item["path"],
+                    "content": item["content"],
+                    "sha256": item["sha256"],
+                }
+                for item in snapshot["files"]
+            ],
+            "static_validation": validation,
+            "repair_of_run_id": run_id,
+            "generation_policy": (
+                "Fix the listed diagnostics with minimal create/update operations. "
+                "Updates must use exact SHA-256 fingerprints from existing_files. Never delete files."
+            ),
+        }
+        try:
+            proposal = await generate_agent_proposal(
+                config.ollama_base_url,
+                config.ollama_model,
+                repair_request,
+                project_context,
+            )
+            validate_generated_changes(
+                config.workspace_root, source_run["slug"], proposal["files"]
+            )
+        except InferenceUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except FileExistsError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        repair_run_id = str(uuid.uuid4())
+        with connect(config.database_path) as db:
+            db.execute(
+                """INSERT INTO agent_runs
+                   (id, project_id, request, model, status, proposal_json)
+                   VALUES (?, ?, ?, ?, 'awaiting_approval', ?)""",
+                (
+                    repair_run_id,
+                    source_run["project_id"],
+                    repair_request,
+                    config.ollama_model,
+                    json.dumps(proposal, ensure_ascii=False),
+                ),
+            )
+            add_event(
+                db,
+                repair_run_id,
+                "repair_proposal_created",
+                {
+                    "source_run_id": run_id,
+                    "diagnostic_count": validation["error_count"],
+                },
+            )
+            add_event(
+                db,
+                repair_run_id,
+                "awaiting_approval",
+                {"message": "Repair proposal is ready for review; no files have been changed."},
+            )
+            row = db.execute(
+                "SELECT * FROM agent_runs WHERE id = ?", (repair_run_id,)
+            ).fetchone()
+        return run_response(row)
+
     @application.get("/v1/agent/runs", response_model=list[AgentRunResponse])
     async def list_agent_runs(
         project_id: str = Query(min_length=1),
@@ -438,6 +559,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             written = apply_generated_changes(
                 config.workspace_root, project["slug"], proposal["files"]
             )
+            static_validation = validate_project(config.workspace_root, project["slug"])
         except (FileExistsError, ValueError, OSError) as exc:
             with connect(config.database_path) as db:
                 db.execute(
@@ -467,8 +589,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             add_event(
                 db,
                 run_id,
+                "static_validation_completed",
+                {
+                    "success": static_validation["success"],
+                    "checked_files": static_validation["checked_files"],
+                    "error_count": static_validation["error_count"],
+                    "diagnostics": static_validation["diagnostics"],
+                    "execution_performed": False,
+                },
+            )
+            add_event(
+                db,
+                run_id,
                 "files_applied",
-                {"files": written, "count": len(written)},
+                {
+                    "files": written,
+                    "count": len(written),
+                    "static_validation_success": static_validation["success"],
+                    "static_validation_errors": static_validation["error_count"],
+                },
             )
             row = db.execute(
                 "SELECT * FROM agent_runs WHERE id = ?", (run_id,)
