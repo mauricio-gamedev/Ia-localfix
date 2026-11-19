@@ -19,6 +19,8 @@ def run_response(row: sqlite3.Row) -> dict:
         files.append(
             {
                 "path": item["path"],
+                "operation": item.get("operation", "create"),
+                "expected_sha256": item.get("expected_sha256"),
                 "size_bytes": len(body.encode("utf-8")),
                 "preview": body[:1200],
             }
