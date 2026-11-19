@@ -408,9 +408,9 @@ def test_static_validation_reports_syntax_errors_without_executing_code(tmp_path
     with make_client(tmp_path) as client:
         project = client.post("/v1/projects", json={"name": "Static Validation"}).json()
         root = tmp_path / "workspaces" / "static-validation"
-        (root / "bad.py").write_text("def broken(:\\n    pass\\n")
+        (root / "bad.py").write_text("def broken(:\n    pass\n")
         (root / "package.json").write_text('{"name": "missing brace"')
-        (root / "safe.py").write_text("raise RuntimeError('must not execute')\\n")
+        (root / "safe.py").write_text("raise RuntimeError('must not execute')\n")
 
         response = client.post(f"/v1/projects/{project['id']}/validate")
 
