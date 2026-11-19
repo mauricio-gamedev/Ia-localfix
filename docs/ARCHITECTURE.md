@@ -30,15 +30,16 @@ If the process restarts while a run is `applying`, the run is marked failed and 
 
 ## Workspace inspection and static validation
 
-The inspection endpoint returns a bounded text-only inventory, SHA-256 fingerprints and previews. It skips symlinks, common build/cache/VCS directories, environment files and key material. The model receives a bounded source snapshot; the API response does not expose full file contents. Static validation parses Python AST, JSON, TOML and XML without importing or executing project code. Unsupported toolchains are reported through markers, not misrepresented as built or tested.
+The inspection endpoint returns a bounded text-only inventory, SHA-256 fingerprints and previews. It skips symlinks, common build/cache/VCS directories, environment files and key material. The model receives a bounded source snapshot; the API response does not expose full file contents. Agent proposals may create new files or update inspected text files. Updates include the inspected SHA-256 and are rejected if a file changes before approval. Static validation parses Python AST, JSON, TOML and XML without importing or executing project code. Unsupported toolchains are reported through markers, not misrepresented as built or tested.
+
+After approved changes are applied, a static validation result is recorded in the run event timeline. When diagnostics exist, the repair endpoint can use them plus the current file snapshot to create a separate repair proposal. It never edits files automatically; the repair proposal requires its own approval.
 
 ## Planned agent execution
 
-1. Add structured repair proposals based on static diagnostics.
-2. Integrate allowlisted build/test adapters in an isolated worker.
-3. Capture logs, artifacts, test results and compiler diagnostics as project events.
-4. Add bounded repair iterations that create a new proposal for review.
-5. Improve memory with ranking, summarization/compaction, retention controls and user-editable decisions.
+1. Integrate allowlisted build/test adapters in an isolated worker.
+2. Capture logs, artifacts, test results and compiler diagnostics as project events.
+3. Extend repair proposals to real compiler/build/test diagnostics and add bounded iteration controls.
+4. Improve memory with ranking, summarization/compaction, retention controls and user-editable decisions.
 
 ## Security invariants
 
