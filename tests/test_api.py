@@ -666,3 +666,82 @@ def test_build_timeout_is_recorded_and_not_retried(tmp_path, monkeypatch):
     assert result["status"] == "timed_out"
     assert result["error"] == "Build exceeded the 2-second timeout."
     assert result["log"] == "still running"
+
+
+def test_android_wrapper_uses_sh_and_server_configured_image():
+    from app.builds import profile_registry
+    from app.config import Settings
+
+    settings = Settings(android_builder_image="registry.example/android-sdk:35")
+    profiles = profile_registry(settings)
+
+    assert profiles["android-debug"].command == (
+        "sh", "./gradlew", "--no-daemon", "--offline", "assembleDebug"
+    )
+    assert profiles["android-unit-tests"].command[-1] == "testDebugUnitTest"
+
+
+def test_build_job_recovery_marks_running_job_interrupted(tmp_path):
+    from app.database import connect
+
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Interrupted Build"}).json()
+        root = tmp_path / "workspaces" / "interrupted-build"
+        (root / "main.py").write_text("pass\n")
+        job = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "python-unittest"},
+        ).json()
+
+    with connect(tmp_path / "db" / "test.sqlite3") as db:
+        db.execute(
+            "UPDATE build_jobs SET status = 'running' WHERE id = ?",
+            (job["id"],),
+        )
+
+    with make_client(tmp_path) as restarted:
+        inspected = restarted.get(f"/v1/builds/{job['id']}").json()
+        events = restarted.get(f"/v1/builds/{job['id']}/events").json()
+
+    assert inspected["status"] == "failed"
+    assert "interrupted" in inspected["error"].lower()
+    assert events[-1]["event_type"] == "build_interrupted"
+
+
+def test_android_artifact_is_saved_and_downloadable(tmp_path, monkeypatch):
+    import app.main
+
+    def fake_build(_root, _slug, _profile, settings, job_id):
+        artifact_dir = settings.artifact_root / job_id
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / "1-app-debug.apk").write_bytes(b"apk-test-data")
+        return {
+            "status": "succeeded",
+            "exit_code": 0,
+            "duration_ms": 7,
+            "log": "BUILD SUCCESSFUL",
+            "error": None,
+            "artifacts": [{
+                "name": "1-app-debug.apk",
+                "size_bytes": len(b"apk-test-data"),
+                "sha256": "test-hash",
+            }],
+        }
+
+    monkeypatch.setattr(app.main, "execute_build", fake_build)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Artifact Test"}).json()
+        (tmp_path / "workspaces" / "artifact-test" / "src.py").write_text("pass\n")
+        created = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "python-unittest"},
+        ).json()
+        completed = client.post(f"/v1/builds/{created['id']}/approve")
+        download = client.get(
+            f"/v1/builds/{created['id']}/artifacts/1-app-debug.apk"
+        )
+
+    assert completed.json()["status"] == "succeeded"
+    assert download.status_code == 200
+    assert download.content == b"apk-test-data"
+    assert download.headers["content-type"] == "application/vnd.android.package-archive"

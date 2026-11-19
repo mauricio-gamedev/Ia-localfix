@@ -16,7 +16,7 @@ MAX_BUILD_SOURCE_FILES = 10_000
 MAX_BUILD_LOG_CHARS = 40_000
 MAX_ARTIFACTS = 20
 MAX_ARTIFACT_BYTES = 200_000_000
-IMAGE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$")
+IMAGE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@_-]{0,255}$")
 SECRET_NAMES = {
     ".npmrc", ".pypirc", ".netrc", "credentials", "credentials.json",
     "service-account.json", "google-services.json",
@@ -56,8 +56,8 @@ def profile_registry(settings: Any) -> dict[str, BuildProfile]:
             "android-debug", "Android debug APK",
             "Run the Gradle wrapper offline and collect APK/AAB outputs.",
             settings.android_builder_image,
-            ("./gradlew", "--no-daemon", "--offline", "assembleDebug"),
-            "./gradlew --no-daemon --offline assembleDebug",
+            ("sh", "./gradlew", "--no-daemon", "--offline", "assembleDebug"),
+            "sh ./gradlew --no-daemon --offline assembleDebug",
             "Gradle wrapper plus an Android SDK builder image with dependencies preloaded.",
             ("**/build/outputs/**/*.apk", "**/build/outputs/**/*.aab"),
         ),
@@ -65,8 +65,8 @@ def profile_registry(settings: Any) -> dict[str, BuildProfile]:
             "android-unit-tests", "Android unit tests",
             "Run Gradle debug unit tests offline.",
             settings.android_builder_image,
-            ("./gradlew", "--no-daemon", "--offline", "testDebugUnitTest"),
-            "./gradlew --no-daemon --offline testDebugUnitTest",
+            ("sh", "./gradlew", "--no-daemon", "--offline", "testDebugUnitTest"),
+            "sh ./gradlew --no-daemon --offline testDebugUnitTest",
             "Gradle wrapper plus an Android SDK builder image with dependencies preloaded.",
         ),
     }
@@ -100,8 +100,8 @@ def get_build_profiles(root: Path, slug: str, settings: Any) -> list[dict]:
         for path in project_dir.rglob("*") if path.is_file() and not path.is_symlink()
     )
     available = {
-        "python-unittest": (has_python, "No Python source or test files were found."),
-        "node-test": (has_node, "No package.json was found."),
+        "python-unittest": (has_python and bool(settings.python_builder_image), "No Python source files or Python builder image were found."),
+        "node-test": (has_node and bool(settings.node_builder_image), "No package.json or Node builder image was found."),
         "android-debug": (
             has_wrapper and has_gradle and bool(settings.android_builder_image),
             "Requires gradlew, a Gradle build file, and IA_ANDROID_BUILDER_IMAGE.",
@@ -116,6 +116,10 @@ def get_build_profiles(root: Path, slug: str, settings: Any) -> list[dict]:
         enabled, reason = available[profile.id]
         if profile.id.startswith("android-") and not settings.android_builder_image:
             reason = "Android SDK image is not configured (IA_ANDROID_BUILDER_IMAGE)."
+        if profile.id == "python-unittest" and not settings.python_builder_image:
+            reason = "Python builder image is not configured."
+        if profile.id == "node-test" and not settings.node_builder_image:
+            reason = "Node builder image is not configured."
         output.append({
             "id": profile.id, "title": profile.title, "description": profile.description,
             "command_preview": profile.command_preview, "requires": profile.requires,
@@ -194,13 +198,18 @@ def _container_args(docker_binary: str, profile: BuildProfile, workspace: Path, 
         raise ValueError("Configured builder image reference is invalid.")
     if not 1 <= settings.build_timeout_seconds <= 1800:
         raise ValueError("Build timeout must be between 30 and 1800 seconds.")
+    if "," in str(workspace) or "\n" in str(workspace) or "\r" in str(workspace):
+        raise ValueError("Temporary workspace path contains unsupported mount characters.")
+    if not settings.docker_binary.strip():
+        raise ValueError("Docker executable is not configured.")
     if not re.fullmatch(r"[1-9][0-9]*[mMgG]", settings.build_memory_limit):
         raise ValueError("Build memory limit must use a positive M or G value.")
     if not 0.1 <= settings.build_cpus <= 8 or not 32 <= settings.build_pids_limit <= 512:
         raise ValueError("Build CPU or PID limit is outside the supported range.")
     return [
-        docker_binary, "run", "--rm", "--pull=missing", "--network=none",
+        docker_binary, "run", "--rm", "--pull=never", "--network=none",
         "--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges",
+        "--security-opt=seccomp=default", "--ulimit", "nofile=1024:1024",
         "--pids-limit", str(settings.build_pids_limit),
         "--memory", settings.build_memory_limit, "--memory-swap", settings.build_memory_limit,
         "--cpus", str(settings.build_cpus), "--user", "10001:10001",

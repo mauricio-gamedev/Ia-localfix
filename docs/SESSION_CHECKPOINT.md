@@ -19,10 +19,10 @@ Updated: 2026-11-19
 - Agent proposals can create files or update inspected text files; updates are rejected if their expected SHA-256 no longer matches.
 - Approved file changes are followed by non-executing syntax/format checks for Python, JSON, TOML and XML.
 - A repair endpoint can generate a new proposal based on static diagnostics; the repair still requires explicit approval.
-- v0.4 validation had 21 passing tests; this v0.5 build-worker change adds Docker invocation and approval tests and must be validated by CI on the new branch head.
+- v0.5 CI passed on commit 8a7279b with 26 passing tests and one Starlette/httpx deprecation warning; additional Android wrapper, interrupted-job and artifact-download tests are in this branch.
 
 - Added a persisted build-job state machine, fixed server-side profile registry, build event timeline, Docker execution adapter, and APK/AAB artifact manifest/download endpoint.
-- Build jobs require explicit approval and use a scratch copy; only that copy is mounted into the container. The container is network-disabled, non-root, read-only except scratch mounts, capability-dropped, no-new-privileges, resource-limited and time-limited.
+- Build jobs require explicit approval and use a scratch copy; only that copy is mounted into the container. The container is network-disabled, image pulls are disabled, non-root, read-only except scratch mounts, capability-dropped, seccomp-filtered, no-new-privileges, resource-limited and time-limited.
 - Android Gradle profiles require IA_ANDROID_BUILDER_IMAGE configured server-side; it must include the Android SDK and preloaded offline dependencies.
 - The API does not automatically execute generated code after file approval; execution happens only through a separately approved build job.
 
