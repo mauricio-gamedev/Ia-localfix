@@ -236,3 +236,61 @@ def test_agent_rejects_path_traversal_before_persisting_run(tmp_path, monkeypatc
         )
         assert response.status_code == 422
         assert client.get("/v1/agent/runs", params={"project_id": project["id"]}).json() == []
+
+
+def test_agent_proposal_receives_recent_project_memory(tmp_path, monkeypatch):
+    import app.main
+
+    captured = {}
+
+    async def fake_proposal(_base_url, _model, _request, project_context):
+        captured.update(project_context)
+        return _agent_proposal()
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Memory Context"}).json()
+        saved = client.post(
+            "/v1/memory",
+            json={"project_id": project["id"], "content": "Use Kotlin and Compose."},
+        )
+        assert saved.status_code == 201
+        created = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Create a minimal project"},
+        )
+        assert created.status_code == 201
+
+    assert captured["project_name"] == "Memory Context"
+    assert captured["recent_project_memory"] == ["Use Kotlin and Compose."]
+
+
+def test_interrupted_agent_run_is_marked_failed_on_restart(tmp_path, monkeypatch):
+    import app.main
+    from app.database import connect
+
+    async def fake_proposal(*_args):
+        return _agent_proposal()
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Interrupted Run"}).json()
+        run = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Create a minimal project"},
+        ).json()
+
+    db_path = tmp_path / "db" / "test.sqlite3"
+    with connect(db_path) as db:
+        db.execute(
+            "UPDATE agent_runs SET status = 'applying' WHERE id = ?",
+            (run["id"],),
+        )
+
+    with make_client(tmp_path) as restarted_client:
+        inspected = restarted_client.get(f"/v1/agent/runs/{run['id']}")
+        assert inspected.status_code == 200
+        assert inspected.json()["status"] == "failed"
+        events = restarted_client.get(f"/v1/agent/runs/{run['id']}/events").json()
+
+    assert events[-1]["event_type"] == "application_interrupted"
