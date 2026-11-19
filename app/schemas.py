@@ -152,3 +152,44 @@ class ProjectValidationResponse(BaseModel):
 
 class AgentRepairRequest(BaseModel):
     instructions: str | None = Field(default=None, max_length=4_000)
+
+
+class BuildProfileResponse(BaseModel):
+    id: str
+    title: str
+    description: str
+    command_preview: str
+    requires: str
+    available: bool
+    reason: str | None
+
+
+class BuildJobCreate(BaseModel):
+    profile_id: Literal[
+        "python-unittest",
+        "node-test",
+        "android-debug",
+        "android-unit-tests",
+    ]
+
+
+class BuildJobResponse(BaseModel):
+    id: str
+    project_id: str
+    profile_id: str
+    status: Literal[
+        "awaiting_approval", "running", "succeeded", "failed", "timed_out", "rejected"
+    ]
+    result: dict | None
+    error: str | None
+    created_at: str
+    updated_at: str
+    started_at: str | None
+    completed_at: str | None
+
+
+class BuildEventResponse(BaseModel):
+    id: str
+    event_type: str
+    payload: dict
+    created_at: str

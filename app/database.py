@@ -71,6 +71,35 @@ def initialize(database_path: Path) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_agent_events_run
                 ON agent_events(run_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS build_jobs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                profile_id TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (
+                    status IN ('awaiting_approval', 'running', 'succeeded', 'failed', 'timed_out', 'rejected')
+                ),
+                result_json TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                started_at TEXT,
+                completed_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_build_jobs_project
+                ON build_jobs(project_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS build_events (
+                id TEXT PRIMARY KEY,
+                build_id TEXT NOT NULL REFERENCES build_jobs(id) ON DELETE CASCADE,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_build_events_build
+                ON build_events(build_id, created_at);
             """
         )
         try:
