@@ -21,6 +21,8 @@ SKIP_DIRS = {
 SKIP_FILES = {
     ".env", ".env.local", ".env.production", "id_rsa", "id_ed25519",
 }
+ALLOWED_HIDDEN_DIRS = {".github", ".husky", ".circleci", ".devcontainer"}
+ALLOWED_HIDDEN_FILES = {".gitignore", ".dockerignore", ".editorconfig", ".npmignore"}
 TEXT_SUFFIXES = {
     ".py", ".pyi", ".kt", ".java", ".kts", ".gradle", ".toml", ".json",
     ".yaml", ".yml", ".xml", ".md", ".txt", ".properties", ".js", ".mjs",
@@ -76,7 +78,13 @@ def _safe_relative_path(relative: str) -> PurePosixPath:
     if any(part in ("", ".", "..") for part in parts):
         raise ValueError("File path contains an invalid segment.")
     path = PurePosixPath(relative)
-    if any(part.startswith(".") and part not in {".well-known"} for part in path.parts):
+    if any(
+        part.startswith(".")
+        and part not in ALLOWED_HIDDEN_DIRS
+        and part not in ALLOWED_HIDDEN_FILES
+        and part != ".well-known"
+        for part in path.parts
+    ):
         raise ValueError("Hidden paths are not available to the agent.")
     if any(part.lower() in SKIP_DIRS for part in path.parts):
         raise ValueError("Build, cache, or VCS paths are not available to the agent.")
@@ -120,7 +128,7 @@ def inspect_workspace(
         dirs[:] = sorted(
             name for name in dirs
             if name.lower() not in SKIP_DIRS
-            and not name.startswith(".")
+            and (not name.startswith(".") or name in ALLOWED_HIDDEN_DIRS)
             and not (current_path / name).is_symlink()
         )
         for filename in sorted(filenames):
@@ -130,7 +138,11 @@ def inspect_workspace(
                 continue
             rel = path.relative_to(project_dir).as_posix()
             suffix = path.suffix.lower()
-            if filename not in TEXT_NAMES and suffix not in TEXT_SUFFIXES:
+            if (
+                filename not in TEXT_NAMES
+                and filename not in ALLOWED_HIDDEN_FILES
+                and suffix not in TEXT_SUFFIXES
+            ):
                 omitted += 1
                 continue
             if filename in {"pyproject.toml", "requirements.txt", "package.json",
