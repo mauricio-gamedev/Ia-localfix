@@ -19,7 +19,7 @@ Updated: 2026-11-19
 - Agent proposals can create files or update inspected text files; updates are rejected if their expected SHA-256 no longer matches.
 - Approved file changes are followed by non-executing syntax/format checks for Python, JSON, TOML and XML.
 - A repair endpoint can generate a new proposal based on static diagnostics; the repair still requires explicit approval.
-- GitHub Actions CI passed with 21 tests on commit `359e36e`; documentation/checkpoint changes after that commit still need a final CI confirmation.
+- GitHub Actions CI passed with 21 tests on commit `ae402fe` (including the v0.4 implementation and repository docs). This checkpoint update is documentation-only and triggers one final CI run.
 
 ## Current API additions
 - `GET /v1/projects/{project_id}/inspect`
