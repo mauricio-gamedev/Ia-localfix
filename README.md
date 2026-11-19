@@ -41,6 +41,7 @@ Set `OLLAMA_BASE_URL` and `OLLAMA_MODEL` to use a local Ollama instance. The API
 - `GET /v1/agent/runs/{run_id}/events` (audit timeline)
 - `POST /v1/agent/runs/{run_id}/approve` (apply approved files)
 - `POST /v1/agent/runs/{run_id}/reject` (reject without writing)
+- `POST /v1/agent/runs/{run_id}/repair` (create a repair proposal from static diagnostics)
 
 Interactive API documentation is available at `/docs`.
 
@@ -62,4 +63,4 @@ The assistant is intended to be viewpoint-neutral and configurable, while retain
 4. `POST /v1/agent/runs/{id}/approve` atomically claims an awaiting run and applies the new files once. `reject` records rejection without writing.
 5. Runs and events remain in SQLite for later inspection.
 
-This milestone adds project inspection, create/update proposals, optimistic concurrency checks, and non-executing syntax validation. It does not yet run project build scripts, execute generated tests, or automatically repair compiler failures. Those capabilities require a separately isolated worker.
+This milestone adds project inspection, create/update proposals, optimistic concurrency checks, non-executing syntax validation after approval, and a diagnostics-driven repair proposal endpoint. A repair is always a new proposal and still requires approval. The API does not yet run project build scripts, execute generated tests, or repair compiler/build failures; those capabilities require a separately isolated worker.
