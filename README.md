@@ -2,7 +2,7 @@
 
 Local-first AI software engineering agent.
 
-**Current milestone: v0.6.0 — build diagnostics and supervised repair cycles.**
+**Current milestone: v0.7.0 — API authentication and normalized test reports.**
 
 ## Implemented foundation
 
@@ -17,6 +17,8 @@ Local-first AI software engineering agent.
 - Docker execution with network disabled, image pulls disabled, read-only container root, dropped capabilities, no-new-privileges, non-root API-service UID, CPU/memory/PID/time limits, and secret/cache exclusions from the scratch build copy.
 - Structured Python, Node TAP, Gradle compiler/task, generic build-failure, and timeout diagnostics extracted from bounded build logs.
 - Supervised build-repair cycles: AI-generated patch proposals, explicit file approval, parent/child build lineage, and a configurable iteration ceiling.
+- Optional bearer-token authentication for every route except `/health`, including API documentation, with a strong-token requirement and a remote-mode configuration guard.
+- Normalized Python unittest, Node TAP and Gradle JUnit XML test summaries in build results.
 - Live Docker worker integration smoke test in GitHub Actions, in addition to the mocked API/unit tests.
 
 ## Run locally
@@ -40,7 +42,7 @@ Set `OLLAMA_BASE_URL` and `OLLAMA_MODEL` to use a local Ollama instance. The API
 - `GET /v1/projects/{project_id}/build-profiles`
 - `POST /v1/projects/{project_id}/builds` (create a build proposal; optional `parent_build_id` for an approved repair retry; does not execute)
 - `GET /v1/projects/{project_id}/builds`
-- `GET /v1/builds/{build_id}` and `/events`
+- `GET /v1/builds/{build_id}` and `/events` (build result includes `diagnostics` and, when extractable, `test_report`)
 - `POST /v1/builds/{build_id}/approve` and `/reject`
 - `POST /v1/builds/{build_id}/repair` (propose a focused patch from build diagnostics; does not write files)
 - `GET /v1/builds/{build_id}/artifacts/{artifact_name}`
@@ -109,3 +111,13 @@ All builder images must be pre-pulled into the local Docker daemon. Android buil
 5. Build jobs share a cycle ID and increment an iteration counter. The server rejects a retry unless the preceding repair was approved and applied, rejects duplicate children, and stops after the configured iteration limit.
 
 A repair proposal can itself be rejected. The workflow does not continue automatically after a failure, timeout, or rejection; the user controls each file-application and build-execution approval.
+
+## API authentication
+
+Local development remains unauthenticated by default when no token is configured. To enable authentication, set IA_API_TOKEN to a secret of at least 32 ASCII characters with no whitespace. Once configured, every route except GET /health requires Authorization: Bearer <token>; this includes /docs, /redoc and /openapi.json. The token is compared in constant time and is never returned by the API.
+
+Before intentionally binding the API to a non-loopback interface, set IA_ALLOW_REMOTE=true; startup then fails unless a valid IA_API_TOKEN is also configured. This setting is an operator guardrail and does not configure Uvicorn's bind address, TLS, a reverse proxy, or firewall rules. Use TLS and a restricted network path for remote access. Do not commit the token to the repository.
+
+## Test result summaries
+
+Completed build results include a normalized result.test_report when the selected toolchain emits a supported summary. Python unittest uses its final test-count line, Node uses TAP counters, and Android unit tests use bounded Gradle JUnit XML files. The summary reports format, total, passed, failed, skipped, todo, suite count and duration when available. A missing report is represented as null; absence of a parsed report is not evidence that tests passed.

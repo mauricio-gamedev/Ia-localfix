@@ -42,7 +42,7 @@ The profile registry is server-owned. API payloads contain only a profile ID; th
 
 The build worker copies the project into a temporary scratch workspace, skipping symlinks, .env* and key/credential files, VCS/dependency/cache directories, and enforcing source file/count/size ceilings. Only that scratch copy is mounted into the container. The container runs with networking disabled, read-only root filesystem, all capabilities dropped, the default seccomp profile, no-new-privileges, non-root UID, PID/memory/CPU/file-descriptor limits, tmpfs scratch locations and a hard timeout. The original project workspace is not mounted into the container. Android artifacts are copied back into a per-job artifact directory with size and SHA-256 metadata.
 
-The initial build profiles use Python unittest, Node's built-in node --test, and offline Android Gradle assemble/unit-test tasks. Python/Node profiles require discoverable test files so an empty test run cannot report success. Android builder images must contain a pre-populated Gradle wrapper/dependency cache at `/opt/ia-gradle-cache`; the fixed worker command copies it into the temporary workspace before invoking Gradle offline. Android profiles require a server-configured builder image; that image must already contain its SDK/toolchains and dependency caches. There is no automatic network-enabled dependency resolution. This initial worker is a hardened baseline, not a substitute for a dedicated VM/microVM boundary against kernel/container-runtime vulnerabilities; Docker daemon access remains a privileged host capability and the API should remain loopback-bound until authentication is implemented.
+The initial build profiles use Python unittest, Node's built-in node --test, and offline Android Gradle assemble/unit-test tasks. Python/Node profiles require discoverable test files so an empty test run cannot report success. Android builder images must contain a pre-populated Gradle wrapper/dependency cache at `/opt/ia-gradle-cache`; the fixed worker command copies it into the temporary workspace before invoking Gradle offline. Android profiles require a server-configured builder image; that image must already contain its SDK/toolchains and dependency caches. There is no automatic network-enabled dependency resolution. This initial worker is a hardened baseline, not a substitute for a dedicated VM/microVM boundary against kernel/container-runtime vulnerabilities; Docker daemon access remains a privileged host capability. Optional bearer-token authentication protects every route except health when configured; remote mode requires the token, but TLS, reverse-proxy controls and firewall restrictions remain operator responsibilities.
 
 ## Build diagnostics and supervised repair cycles
 
@@ -54,10 +54,16 @@ The configured maximum defaults to two retry iterations and is restricted to one
 
 GitHub Actions has two jobs: deterministic API/unit tests and a live Docker integration smoke test. The latter preloads a Python builder image and executes a known one-test fixture via the same worker in a real container; it validates the isolation/cleanup path, not Android Gradle or arbitrary model-generated project success.
 
+## API authentication and test reports
+
+When IA_API_TOKEN is configured, HTTP middleware checks a bearer token on every route except /health, including interactive documentation and OpenAPI. Tokens must have at least 32 ASCII non-whitespace characters. IA_ALLOW_REMOTE=true prevents startup without a token; it is an explicit operator acknowledgment, not automatic bind-address detection or transport encryption. Remote operation still requires TLS, restricted ingress and careful Docker-host protection.
+
+Build summaries are normalized from Python unittest output, Node TAP counters and Gradle JUnit XML. XML discovery is restricted to at most 50 TEST-*.xml candidates of at most 512 KB each inside the disposable build workspace; malformed, oversized, symlinked or out-of-workspace reports are ignored. A missing summary remains null and is never interpreted as a passing test suite.
+
 ## Planned agent execution
 
 1. Add richer toolchain-specific parsers and test-report/artifact metadata for additional languages.
-2. Add authentication, authorization and rate/queue limits before any non-loopback deployment.
+2. Add fine-grained project authorization, rate limits and a durable multi-worker build queue before multi-user/non-loopback operation.
 3. Improve memory with ranking, summarization/compaction, retention controls and user-editable decisions.
 4. Evaluate stronger VM/microVM isolation for higher-risk multi-tenant execution.
 

@@ -6,7 +6,7 @@ Updated: 2026-11-19
 - Repository: `mauricio-gamedev/Ia-localfix`
 - Active development branch: `feat/local-ai-api-foundation`
 - Pull request: #1 (draft), targeting `main`
-- Package/API version: 0.6.0
+- Package/API version: 0.7.0
 - Base stack: Python 3.12, FastAPI, Pydantic, HTTPX, SQLite/FTS5, Ollama
 - CI workflow: `.github/workflows/ci.yml`
 
@@ -45,13 +45,19 @@ Updated: 2026-11-19
 
 Existing agent run endpoints remain documented in the README.
 
+## v0.7 additions
+- Optional bearer-token authentication protects every endpoint except /health, including docs/OpenAPI, when IA_API_TOKEN is configured. Tokens require at least 32 ASCII non-whitespace characters and are checked with constant-time comparison.
+- IA_ALLOW_REMOTE=true requires a valid token at startup as an explicit deployment guard. It does not detect the actual Uvicorn bind address or provide TLS; remote ingress still needs separate network/TLS hardening.
+- Build result summaries are normalized for Python unittest, Node TAP and Gradle JUnit XML. Parsing is bounded to at most 50 report candidates of at most 512 KB each. Missing/unparseable reports remain null and are not treated as success.
+
 ## Not implemented yet
 - No end-to-end Docker build has been run in this development environment; CI tests the Docker adapter through a mocked subprocess. A live Docker daemon/container remains unverified.
 - Publication of the Android SDK builder image and dependency-cache provisioning.
 - Additional parsers for toolchains beyond Python/Node/Gradle and richer test-report extraction.
 - Unattended multi-tool autonomy; repair cycles are intentionally supervised with per-change and per-build approvals.
 - Advanced memory ranking, summarization/compaction and retention controls.
-- Authentication and hardening for network-exposed deployments.
+- Fine-grained project authorization, rate limiting and a durable multi-worker build queue.
+- Stronger VM/microVM execution isolation and TLS/reverse-proxy deployment automation.
 
 ## Important constraints
 - Do not execute model-generated shell commands.
