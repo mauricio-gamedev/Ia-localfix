@@ -335,7 +335,9 @@ def build_job_response(row) -> dict:
     import json
     return {
         "id": row["id"], "project_id": row["project_id"],
-        "profile_id": row["profile_id"], "status": row["status"],
+        "profile_id": row["profile_id"], "cycle_id": row["cycle_id"],
+        "iteration": row["iteration"], "parent_build_id": row["parent_build_id"],
+        "status": row["status"],
         "result": json.loads(row["result_json"]) if row["result_json"] else None,
         "error": row["error"], "created_at": row["created_at"],
         "updated_at": row["updated_at"], "started_at": row["started_at"],
