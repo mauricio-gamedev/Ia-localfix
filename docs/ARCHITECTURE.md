@@ -34,12 +34,22 @@ The inspection endpoint returns a bounded text-only inventory, SHA-256 fingerpri
 
 After approved changes are applied, a static validation result is recorded in the run event timeline. When diagnostics exist, the repair endpoint can use them plus the current file snapshot to create a separate repair proposal. It never edits files automatically; the repair proposal requires its own approval.
 
+## Controlled build execution
+
+Build jobs are persisted separately from agent file proposals. A user selects one available profile and a job enters awaiting_approval; approval is claimed with a conditional SQL update so a job cannot execute twice. Every transition is recorded in build_events.
+
+The profile registry is server-owned. API payloads contain only a profile ID; the model cannot choose a container image, executable, arguments, shell fragment, environment variables or network mode. Each profile maps to a fixed argument vector. Docker is invoked with an argument array and subprocess shell mode is never used.
+
+The build worker copies the project into a temporary scratch workspace, skipping symlinks, .env* and key/credential files, VCS/dependency/cache directories, and enforcing source file/count/size ceilings. Only that scratch copy is mounted into the container. The container runs with networking disabled, read-only root filesystem, all capabilities dropped, no-new-privileges, non-root UID, PID/memory/CPU limits, tmpfs scratch locations and a hard timeout. The original project workspace is not mounted into the container. Android artifacts are copied back into a per-job artifact directory with size and SHA-256 metadata.
+
+The initial build profiles use Python unittest, Node's built-in node --test, and offline Android Gradle assemble/unit-test tasks. Android profiles require a server-configured builder image; that image must already contain its SDK/toolchains and dependency caches. There is no automatic network-enabled dependency resolution. This initial worker is a hardened baseline, not a substitute for a dedicated VM/microVM boundary against kernel/container-runtime vulnerabilities; Docker daemon access remains a privileged host capability and the API should remain loopback-bound until authentication is implemented.
+
 ## Planned agent execution
 
-1. Integrate allowlisted build/test adapters in an isolated worker.
-2. Capture logs, artifacts, test results and compiler diagnostics as project events.
-3. Extend repair proposals to real compiler/build/test diagnostics and add bounded iteration controls.
-4. Improve memory with ranking, summarization/compaction, retention controls and user-editable decisions.
+1. Add toolchain-specific result parsers and richer compiler/test diagnostics.
+2. Extend repair proposals to approved build/test diagnostics and bounded repair iteration controls.
+3. Improve memory with ranking, summarization/compaction, retention controls and user-editable decisions.
+4. Add authentication before any non-loopback deployment.
 
 ## Security invariants
 

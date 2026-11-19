@@ -192,7 +192,7 @@ def _collect_artifacts(workspace: Path, artifact_root: Path, job_id: str, patter
 def _container_args(docker_binary: str, profile: BuildProfile, workspace: Path, settings: Any) -> list[str]:
     if not IMAGE_REF.fullmatch(profile.image):
         raise ValueError("Configured builder image reference is invalid.")
-    if not 30 <= settings.build_timeout_seconds <= 1800:
+    if not 1 <= settings.build_timeout_seconds <= 1800:
         raise ValueError("Build timeout must be between 30 and 1800 seconds.")
     if not re.fullmatch(r"[1-9][0-9]*[mMgG]", settings.build_memory_limit):
         raise ValueError("Build memory limit must use a positive M or G value.")
