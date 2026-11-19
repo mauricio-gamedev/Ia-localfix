@@ -123,3 +123,116 @@ def test_generate_never_overwrites_existing_file(tmp_path, monkeypatch):
         )
     assert response.status_code == 409
     assert target.read_text() == "original"
+
+
+def _agent_proposal(path="src/main.py", content="print('agent output')\\n"):
+    return {
+        "summary": "Create a minimal Python project.",
+        "plan": "Create the entry point and validate its contents.",
+        "steps": [
+            {
+                "title": "Create the entry point",
+                "description": "Add the requested Python source file.",
+            },
+            {
+                "title": "Review the generated output",
+                "description": "Inspect the file before running any build or test tools.",
+            },
+        ],
+        "files": [{"path": path, "content": content}],
+    }
+
+
+def test_agent_run_waits_for_approval_and_records_events(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_proposal(*_args):
+        return _agent_proposal()
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Agent Workflow"}).json()
+        response = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Create a minimal Python project"},
+        )
+        assert response.status_code == 201
+        run = response.json()
+        assert run["status"] == "awaiting_approval"
+        assert run["files"][0]["path"] == "src/main.py"
+        assert not (tmp_path / "workspaces" / "agent-workflow" / "src" / "main.py").exists()
+
+        events = client.get(f"/v1/agent/runs/{run['id']}/events")
+        assert events.status_code == 200
+        assert [event["event_type"] for event in events.json()] == [
+            "proposal_created",
+            "awaiting_approval",
+        ]
+
+
+def test_agent_approval_applies_files_once(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_proposal(*_args):
+        return _agent_proposal()
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Approved Agent"}).json()
+        run = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Create a minimal Python project"},
+        ).json()
+
+        approved = client.post(f"/v1/agent/runs/{run['id']}/approve")
+        assert approved.status_code == 200
+        assert approved.json()["status"] == "completed"
+        target = tmp_path / "workspaces" / "approved-agent" / "src" / "main.py"
+        assert target.read_text() == "print('agent output')\\n"
+
+        duplicate = client.post(f"/v1/agent/runs/{run['id']}/approve")
+        assert duplicate.status_code == 409
+
+        events = client.get(f"/v1/agent/runs/{run['id']}/events").json()
+        assert events[-1]["event_type"] == "files_applied"
+
+
+def test_agent_rejection_never_writes_files(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_proposal(*_args):
+        return _agent_proposal()
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Rejected Agent"}).json()
+        run = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Create a minimal Python project"},
+        ).json()
+
+        rejected = client.post(
+            f"/v1/agent/runs/{run['id']}/reject",
+            json={"reason": "Review requested changes first."},
+        )
+        assert rejected.status_code == 200
+        assert rejected.json()["status"] == "rejected"
+        assert not (tmp_path / "workspaces" / "rejected-agent" / "src" / "main.py").exists()
+        assert client.post(f"/v1/agent/runs/{run['id']}/approve").status_code == 409
+
+
+def test_agent_rejects_path_traversal_before_persisting_run(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_proposal(*_args):
+        return _agent_proposal(path="../outside.txt", content="unsafe")
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Unsafe Proposal"}).json()
+        response = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Create a minimal Python project"},
+        )
+        assert response.status_code == 422
+        assert client.get("/v1/agent/runs", params={"project_id": project["id"]}).json() == []
