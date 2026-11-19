@@ -15,7 +15,7 @@ NODE_LOCATION_RE = re.compile(
 GRADLE_KOTLIN_RE = re.compile(r"(?P<path>file:///workspace/[^:\s]+):\s*\((?P<line>\d+),\s*(?P<column>\d+)\):\s*(?P<message>.+)")
 GRADLE_COMPILER_RE = re.compile(r"(?P<path>file:///workspace/[^:\s]+):(?P<line>\d+):(?P<column>\d+):\s*error:\s*(?P<message>.+)")
 GRADLE_TASK_RE = re.compile(r"> Task (?P<task>:[A-Za-z0-9_:-]+) FAILED")
-ERROR_LINE_RE = re.compile(r"^(?:ERROR|FAIL|FAILED|not ok\b|error:|AssertionError:|ImportError:|ModuleNotFoundError:)(.*)$", re.I)
+ERROR_LINE_RE = re.compile(r"^(?:ERROR|FAIL|FAILED|error:|AssertionError:|ImportError:|ModuleNotFoundError:)(.*)$", re.I)
 
 
 def _workspace_path(value: str | None) -> str | None:
