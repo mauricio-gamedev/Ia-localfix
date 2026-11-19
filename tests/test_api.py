@@ -6,12 +6,14 @@ from app.config import Settings
 from app.main import create_app
 
 
-def make_client(tmp_path: Path) -> TestClient:
+def make_client(tmp_path: Path, *, api_token: str = '', allow_remote: bool = False) -> TestClient:
     settings = Settings(
         database_path=tmp_path / "db" / "test.sqlite3",
         workspace_root=tmp_path / "workspaces",
         ollama_base_url="http://127.0.0.1:9",
         ollama_model="test-model",
+        api_token=api_token,
+        allow_remote=allow_remote,
     )
     return TestClient(create_app(settings))
 
@@ -983,3 +985,106 @@ def test_v05_build_database_migrates_repair_cycle_columns(tmp_path):
     assert row["cycle_id"] == "build-legacy"
     assert row["iteration"] == 0
     assert row["parent_build_id"] is None
+
+
+def test_bearer_auth_protects_api_and_docs_but_keeps_health_public(tmp_path):
+    token = "localfix-test-token-" + ("x" * 32)
+    with make_client(tmp_path, api_token=token) as client:
+        assert client.get("/health").status_code == 200
+        assert client.get("/v1/projects").status_code == 401
+        assert client.get("/docs").status_code == 401
+        assert client.get("/openapi.json").status_code == 401
+        assert client.get(
+            "/v1/projects",
+            headers={"Authorization": "Bearer incorrect-token"},
+        ).status_code == 401
+        assert client.get(
+            "/v1/projects",
+            headers={"Authorization": "Bearer é"},
+        ).status_code == 401
+
+        authorized = client.get(
+            "/v1/projects",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        docs = client.get("/docs", headers={"Authorization": f"Bearer {token}"})
+
+    assert authorized.status_code == 200
+    assert docs.status_code == 200
+
+
+def test_remote_mode_requires_a_strong_api_token(tmp_path):
+    import pytest
+
+    with pytest.raises(ValueError, match="IA_API_TOKEN is required"):
+        make_client(tmp_path, allow_remote=True)
+
+    with pytest.raises(ValueError, match="at least 32"):
+        make_client(tmp_path, api_token="too-short")
+
+
+def test_test_report_parsers_normalize_python_and_node_results():
+    from app.test_reports import parse_test_report
+
+    python_log = "Ran 4 tests in 0.125s\n\nFAILED (failures=1, errors=1)"
+    python = parse_test_report("python-unittest", "failed", python_log)
+    assert python == {
+        "format": "python-unittest", "total": 4, "passed": 2,
+        "failed": 2, "skipped": 0, "todo": 0, "suites": 1, "duration_ms": 125,
+    }
+
+    node_log = (
+        "# tests 5\n# pass 3\n# fail 1\n# cancelled 0\n"
+        "# skipped 1\n# todo 0\n# duration_ms 19.4\n"
+    )
+    node = parse_test_report("node-test", "failed", node_log)
+    assert node == {
+        "format": "node-tap", "total": 5, "passed": 3,
+        "failed": 1, "skipped": 1, "todo": 0, "suites": 1, "duration_ms": 19,
+    }
+
+
+def test_test_report_parses_bounded_gradle_junit_xml(tmp_path):
+    from app.test_reports import parse_test_report
+
+    reports = tmp_path / "app" / "build" / "test-results" / "testDebugUnitTest"
+    reports.mkdir(parents=True)
+    (reports / "TEST-com.example.SampleTest.xml").write_text(
+        '<testsuite name="SampleTest" tests="5" failures="1" errors="0" '
+        'skipped="1" time="0.250"></testsuite>'
+    )
+    report = parse_test_report("android-unit-tests", "failed", "", tmp_path)
+    assert report == {
+        "format": "junit-xml", "total": 5, "passed": 3,
+        "failed": 1, "skipped": 1, "todo": 0, "suites": 1, "duration_ms": 250,
+    }
+
+
+def test_successful_build_response_contains_test_report_when_available(tmp_path, monkeypatch):
+    import app.main
+
+    def fake_build(_root, _slug, _profile, _settings, _job_id):
+        return {
+            "status": "succeeded", "exit_code": 0, "duration_ms": 12,
+            "log": "Ran 2 tests in 0.010s\n\nOK", "error": None,
+            "artifacts": [], "diagnostics": [],
+            "test_report": {
+                "format": "python-unittest", "total": 2, "passed": 2,
+                "failed": 0, "skipped": 0, "todo": 0, "suites": 1, "duration_ms": 10,
+            },
+        }
+
+    monkeypatch.setattr(app.main, "execute_build", fake_build)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Test Report API"}).json()
+        (tmp_path / "workspaces" / "test-report-api" / "test_demo.py").write_text(
+            "import unittest\nclass Demo(unittest.TestCase):\n def test_ok(self): self.assertTrue(True)\n"
+        )
+        job = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "python-unittest"},
+        ).json()
+        completed = client.post(f"/v1/builds/{job['id']}/approve")
+
+    assert completed.status_code == 200
+    assert completed.json()["result"]["test_report"]["passed"] == 2

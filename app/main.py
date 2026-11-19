@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import json
 import sqlite3
 import uuid
@@ -6,7 +7,7 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.agent import add_event, event_responses, run_response
 from app.builds import (
@@ -104,11 +105,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     application = FastAPI(
         title="Ia-localfix API",
-        version="0.6.0",
+        version="0.7.0",
         description="Local-first AI software engineering control plane.",
         lifespan=lifespan,
     )
     application.state.settings = config
+
+    if config.api_token:
+        @application.middleware("http")
+        async def require_bearer_token(request, call_next):
+            if request.url.path == "/health":
+                return await call_next(request)
+            authorization = request.headers.get("authorization", "")
+            scheme, separator, supplied = authorization.partition(" ")
+            supplied_token = supplied.strip()
+            valid = (
+                separator == " "
+                and scheme.lower() == "bearer"
+                and bool(supplied_token)
+                and supplied_token.isascii()
+                and hmac.compare_digest(supplied_token, config.api_token)
+            )
+            if not valid:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "A valid bearer token is required."},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            return await call_next(request)
 
     @application.get("/health")
     async def health():
@@ -1047,8 +1071,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "duration_ms": 0,
                 "log": "",
                 "error": f"Build runner failed unexpectedly: {str(exc)[:500]}",
-                "artifacts": [],
+                "artifacts": [], "diagnostics": [], "test_report": None,
             }
+        result.setdefault("diagnostics", [])
+        result.setdefault("test_report", None)
         with connect(config.database_path) as db:
             db.execute(
                 """UPDATE build_jobs SET status = ?, result_json = ?, error = ?,
@@ -1072,6 +1098,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "artifact_count": len(result.get("artifacts", [])),
                     "diagnostic_count": len(result.get("diagnostics", [])),
                     "diagnostics": result.get("diagnostics", [])[:60],
+                    "test_report": result.get("test_report"),
                     "error": result.get("error"),
                 },
             )

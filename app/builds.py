@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.build_diagnostics import parse_build_diagnostics
-from app.build_diagnostics import parse_build_diagnostics
+from app.test_reports import parse_test_report
 from app.workspaces import SKIP_DIRS, project_directory
 
 MAX_BUILD_SOURCE_BYTES = 250_000_000
@@ -270,7 +270,7 @@ def execute_build(root: Path, slug: str, profile_id: str, settings: Any, job_id:
         return {
             "status": "failed", "exit_code": None, "duration_ms": 0,
             "log": "", "error": "The required builder image is not configured on the server.",
-            "artifacts": [], "diagnostics": [],
+            "artifacts": [], "diagnostics": [], "test_report": None,
         }
     _, project_dir = project_directory(root, slug)
     started = time.monotonic()
@@ -316,11 +316,12 @@ def execute_build(root: Path, slug: str, profile_id: str, settings: Any, job_id:
                     workspace, settings.artifact_root, job_id, profile.artifact_patterns
                 )
             diagnostics = parse_build_diagnostics(profile_id, status, log, exit_code)
+            test_report = parse_test_report(profile_id, status, log, workspace)
             return {
                 "status": status, "exit_code": exit_code,
                 "duration_ms": int((time.monotonic() - started) * 1000),
                 "log": log, "error": error, "artifacts": artifacts,
-                "diagnostics": diagnostics,
+                "diagnostics": diagnostics, "test_report": test_report,
             }
     except (OSError, ValueError) as exc:
         return {
@@ -328,6 +329,7 @@ def execute_build(root: Path, slug: str, profile_id: str, settings: Any, job_id:
             "duration_ms": int((time.monotonic() - started) * 1000),
             "log": "", "error": f"{stage}: {str(exc)[:900]}", "artifacts": [],
             "diagnostics": parse_build_diagnostics(profile_id, "failed", "", None),
+            "test_report": None,
         }
 
 

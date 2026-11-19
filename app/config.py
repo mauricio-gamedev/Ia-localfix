@@ -3,6 +3,18 @@ import os
 from pathlib import Path
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean value.")
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     database_path: Path = Path("./data/ia-localfix.sqlite3")
@@ -20,6 +32,18 @@ class Settings:
     build_cpus: float = 2.0
     build_pids_limit: int = 128
     max_repair_iterations: int = 2
+    api_token: str = ""
+    allow_remote: bool = False
+
+    def __post_init__(self) -> None:
+        if self.api_token and (
+            len(self.api_token) < 32
+            or not self.api_token.isascii()
+            or any(character.isspace() for character in self.api_token)
+        ):
+            raise ValueError("IA_API_TOKEN must contain at least 32 ASCII non-whitespace characters.")
+        if self.allow_remote and not self.api_token:
+            raise ValueError("IA_API_TOKEN is required when IA_ALLOW_REMOTE=true.")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -39,4 +63,6 @@ class Settings:
             build_cpus=float(os.getenv("IA_BUILD_CPUS", "2.0")),
             build_pids_limit=int(os.getenv("IA_BUILD_PIDS_LIMIT", "128")),
             max_repair_iterations=int(os.getenv("IA_MAX_REPAIR_ITERATIONS", "2")),
+            api_token=os.getenv("IA_API_TOKEN", "").strip(),
+            allow_remote=_env_bool("IA_ALLOW_REMOTE"),
         )
