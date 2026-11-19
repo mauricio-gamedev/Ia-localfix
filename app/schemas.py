@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -10,6 +12,23 @@ class ProjectOut(BaseModel):
     name: str
     slug: str
     created_at: str
+
+
+class ProjectFilePreview(BaseModel):
+    path: str
+    size_bytes: int
+    sha256: str
+    preview: str
+    truncated: bool
+
+
+class ProjectInspectionResponse(BaseModel):
+    project_id: str
+    files: list[ProjectFilePreview]
+    file_count: int
+    omitted_count: int
+    total_bytes: int
+    project_markers: list[str]
 
 
 class MemoryCreate(BaseModel):
@@ -63,6 +82,11 @@ class AgentStep(BaseModel):
 class AgentProposedFile(BaseModel):
     path: str = Field(min_length=1, max_length=240)
     content: str = Field(max_length=1_000_000)
+    operation: Literal["create", "update"] = "create"
+    expected_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[a-f0-9]{64}$",
+    )
 
 
 class AgentProposal(BaseModel):
@@ -74,6 +98,8 @@ class AgentProposal(BaseModel):
 
 class AgentFilePreview(BaseModel):
     path: str
+    operation: Literal["create", "update"]
+    expected_sha256: str | None
     size_bytes: int
     preview: str
 
