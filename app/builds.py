@@ -92,11 +92,21 @@ def _project_files(project_dir: Path):
             yield path, relative
 
 
+def _is_unittest_discoverable(path: Path, project_dir: Path) -> bool:
+    parent = path.parent
+    while parent != project_dir:
+        if not (parent / "__init__.py").is_file():
+            return False
+        parent = parent.parent
+    return True
+
+
 def get_build_profiles(root: Path, slug: str, settings: Any) -> list[dict]:
     _, project_dir = project_directory(root, slug)
     files = list(_project_files(project_dir))
     has_python_tests = any(
         path.suffix.lower() == ".py" and path.name.startswith("test")
+        and _is_unittest_discoverable(path, project_dir)
         for path, _ in files
     )
     has_node_tests = any(
