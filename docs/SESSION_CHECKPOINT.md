@@ -19,7 +19,7 @@ Updated: 2026-11-19
 - Agent proposals can create files or update inspected text files; updates are rejected if their expected SHA-256 no longer matches.
 - Approved file changes are followed by non-executing syntax/format checks for Python, JSON, TOML and XML.
 - A repair endpoint can generate a new proposal based on static diagnostics; the repair still requires explicit approval.
-- v0.5 CI passed on commit 8a7279b with 26 passing tests and one Starlette/httpx deprecation warning; additional Android wrapper, interrupted-job and artifact-download tests are in this branch.
+- v0.5 CI passed on branch head `8de8b07` with **29 passed, 1 Starlette/httpx deprecation warning**. The Docker invocation is mocked in CI; no live container was launched by the workflow.
 
 - Added a persisted build-job state machine, fixed server-side profile registry, build event timeline, Docker execution adapter, and APK/AAB artifact manifest/download endpoint.
 - Build jobs require explicit approval and use a scratch copy; only that copy is mounted into the container. The container is network-disabled, image pulls are disabled, non-root, read-only except scratch mounts, capability-dropped, seccomp-filtered, no-new-privileges, resource-limited and time-limited.
@@ -40,7 +40,7 @@ Updated: 2026-11-19
 Existing agent run endpoints remain documented in the README.
 
 ## Not implemented yet
-- An end-to-end Docker build has not yet been run in this development environment; the Docker adapter is covered by mocked subprocess tests and CI.
+- No end-to-end Docker build has been run in this development environment; CI tests the Docker adapter through a mocked subprocess. A live Docker daemon/container remains unverified.
 - Publication of the Android SDK builder image and dependency-cache provisioning.
 - Repair from compiler/build/test diagnostics.
 - Bounded autonomous multi-tool iteration.
