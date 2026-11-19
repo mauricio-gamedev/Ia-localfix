@@ -1035,7 +1035,7 @@ def test_test_report_parsers_normalize_python_and_node_results():
     }
 
     successful_python = parse_test_report(
-        "python-unittest", "succeeded", "Ran 1 test in 0.010s\\n\\nOK"
+        "python-unittest", "succeeded", "Ran 1 test in 0.010s" + chr(10) + chr(10) + "OK"
     )
     assert successful_python["passed"] == 1
     assert successful_python["failed"] == 0
