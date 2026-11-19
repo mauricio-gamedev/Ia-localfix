@@ -16,6 +16,7 @@ from app.inference import (
 )
 from app.schemas import (
     AgentEventResponse,
+    ProjectInspectionResponse,
     AgentRejectRequest,
     AgentRunCreate,
     AgentRunResponse,
