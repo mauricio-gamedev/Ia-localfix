@@ -786,3 +786,196 @@ def test_node_profile_requires_discoverable_test_file(tmp_path):
     (project / "tests" / "math.test.js").write_text("import test from 'node:test';\n")
     after = {item["id"]: item for item in get_build_profiles(root, "node-project", settings)}
     assert after["node-test"]["available"] is True
+
+
+def test_build_diagnostics_parse_python_node_and_gradle_failures():
+    from app.build_diagnostics import parse_build_diagnostics
+
+    python_log = (
+        'Traceback (most recent call last):\n'
+        '  File "/workspace/tests/test_main.py", line 17, in test_value\n'
+        '    self.assertEqual(1, 2)\n'
+        'AssertionError: 1 != 2\n'
+    )
+    python = parse_build_diagnostics("python-unittest", "failed", python_log, 1)
+    assert python[0]["path"] == "tests/test_main.py"
+    assert python[0]["line"] == 17
+    assert "AssertionError" in python[0]["message"]
+
+    node_log = (
+        "not ok 1 - rejects invalid state\n"
+        "  location: 'file:///workspace/tests/state.test.js:12:4'\n"
+        "  error: 'expected state to be valid'\n"
+    )
+    node = parse_build_diagnostics("node-test", "failed", node_log, 1)
+    assert node[0]["path"] == "tests/state.test.js"
+    assert node[0]["line"] == 12
+    assert "expected state" in node[0]["message"]
+
+    gradle_log = (
+        "e: file:///workspace/app/src/main/java/com/example/Main.kt: (22, 9): Unresolved reference: missing\n"
+        "> Task :app:compileDebugKotlin FAILED\n"
+    )
+    gradle = parse_build_diagnostics("android-debug", "failed", gradle_log, 1)
+    assert gradle[0]["category"] == "gradle_compiler"
+    assert gradle[0]["path"] == "app/src/main/java/com/example/Main.kt"
+    assert gradle[0]["line"] == 22
+
+
+def test_build_diagnostics_reject_paths_outside_workspace_and_report_timeout():
+    from app.build_diagnostics import parse_build_diagnostics
+
+    parsed = parse_build_diagnostics(
+        "python-unittest",
+        "failed",
+        'File "/etc/passwd", line 1, in open\nPermissionError: denied\n',
+        1,
+    )
+    assert parsed
+    assert all(item["path"] is None for item in parsed)
+
+    timed_out = parse_build_diagnostics("node-test", "timed_out", "stopped", None)
+    assert timed_out[0]["category"] == "timeout"
+
+
+def test_supervised_build_repair_cycle_is_approved_and_bounded(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_proposal(_base, _model, _request, context):
+        current = next(item for item in context["existing_files"] if item["path"] == "main.py")
+        version = int(current["content"].split("=")[-1].strip()) + 1
+        return {
+            "summary": "Fix the failing build assertion.",
+            "plan": "Update the affected module using the inspected file hash.",
+            "steps": [{"title": "Update module", "description": "Apply a minimal repair."}],
+            "files": [{
+                "path": "main.py",
+                "content": f"VALUE = {version}\n",
+                "operation": "update",
+                "expected_sha256": current["sha256"],
+            }],
+        }
+
+    def fake_build(_root, _slug, _profile, _settings, _job_id):
+        return {
+            "status": "failed",
+            "exit_code": 1,
+            "duration_ms": 8,
+            "log": "AssertionError: expected repaired build",
+            "error": "Build container exited with status 1.",
+            "artifacts": [],
+            "diagnostics": [{
+                "severity": "error", "category": "python_test_or_runtime",
+                "path": "test_main.py", "line": 5, "column": None,
+                "message": "AssertionError: expected repaired build",
+            }],
+        }
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    monkeypatch.setattr(app.main, "execute_build", fake_build)
+
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Repair Cycle"}).json()
+        root = tmp_path / "workspaces" / "repair-cycle"
+        (root / "main.py").write_text("VALUE = 1\n")
+        (root / "test_main.py").write_text(
+            "import unittest\nclass TestValue(unittest.TestCase):\n"
+            "    def test_value(self): self.assertEqual(2, 1)\n"
+        )
+
+        first = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "python-unittest"},
+        ).json()
+        assert first["iteration"] == 0
+        first_failed = client.post(f"/v1/builds/{first['id']}/approve").json()
+        assert first_failed["status"] == "failed"
+        assert first_failed["result"]["diagnostics"][0]["path"] == "test_main.py"
+
+        repair_one = client.post(f"/v1/builds/{first['id']}/repair", json={})
+        assert repair_one.status_code == 201
+        run_one = repair_one.json()
+        assert run_one["status"] == "awaiting_approval"
+
+        premature = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "python-unittest", "parent_build_id": first["id"]},
+        )
+        assert premature.status_code == 409
+
+        approved_one = client.post(f"/v1/agent/runs/{run_one['id']}/approve")
+        assert approved_one.status_code == 200
+        assert (root / "main.py").read_text() == "VALUE = 2\n"
+
+        second = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "python-unittest", "parent_build_id": first["id"]},
+        )
+        assert second.status_code == 201
+        second_job = second.json()
+        assert second_job["iteration"] == 1
+        assert second_job["cycle_id"] == first["cycle_id"]
+        assert second_job["parent_build_id"] == first["id"]
+        client.post(f"/v1/builds/{second_job['id']}/approve")
+
+        repair_two = client.post(f"/v1/builds/{second_job['id']}/repair", json={})
+        assert repair_two.status_code == 201
+        run_two = repair_two.json()
+        assert client.post(f"/v1/agent/runs/{run_two['id']}/approve").status_code == 200
+
+        third = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "python-unittest", "parent_build_id": second_job["id"]},
+        )
+        assert third.status_code == 201
+        third_job = third.json()
+        assert third_job["iteration"] == 2
+        client.post(f"/v1/builds/{third_job['id']}/approve")
+
+        blocked = client.post(f"/v1/builds/{third_job['id']}/repair", json={})
+        assert blocked.status_code == 409
+
+
+def test_v05_build_database_migrates_repair_cycle_columns(tmp_path):
+    import sqlite3
+    from app.database import connect, initialize
+
+    path = tmp_path / "legacy.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            slug TEXT NOT NULL UNIQUE,
+            workspace_path TEXT NOT NULL
+        );
+        INSERT INTO projects (id, name, slug, workspace_path)
+        VALUES ('project-1', 'Legacy', 'legacy', '/tmp/legacy');
+        CREATE TABLE build_jobs (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            profile_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            result_json TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            started_at TEXT,
+            completed_at TEXT
+        );
+        INSERT INTO build_jobs (id, project_id, profile_id, status)
+        VALUES ('build-legacy', 'project-1', 'python-unittest', 'failed');
+        """
+    )
+    connection.close()
+
+    initialize(path)
+    with connect(path) as db:
+        row = db.execute("SELECT * FROM build_jobs WHERE id = 'build-legacy'").fetchone()
+        columns = {item["name"] for item in db.execute("PRAGMA table_info(build_jobs)")}
+
+    assert {"cycle_id", "iteration", "parent_build_id"} <= columns
+    assert row["cycle_id"] == "build-legacy"
+    assert row["iteration"] == 0
+    assert row["parent_build_id"] is None
