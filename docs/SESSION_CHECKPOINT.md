@@ -19,7 +19,7 @@ Updated: 2026-11-19
 - Agent proposals can create files or update inspected text files; updates are rejected if their expected SHA-256 no longer matches.
 - Approved file changes are followed by non-executing syntax/format checks for Python, JSON, TOML and XML.
 - A repair endpoint can generate a new proposal based on static diagnostics; the repair still requires explicit approval.
-- v0.5 CI passed on branch head `8de8b07` with **29 passed, 1 Starlette/httpx deprecation warning**. The Docker invocation is mocked in CI; no live container was launched by the workflow.
+- v0.5 CI passed on branch head `f245e8a` with **31 passed, 1 Starlette/httpx deprecation warning**. CI verifies the Docker adapter with a mocked subprocess; no live container was launched by the workflow.
 
 - Added a persisted build-job state machine, fixed server-side profile registry, build event timeline, Docker execution adapter, and APK/AAB artifact manifest/download endpoint.
 - Build jobs require explicit approval and use a scratch copy; only that copy is mounted into the container. The container is network-disabled, image pulls are disabled, non-root, read-only except scratch mounts, capability-dropped, seccomp-filtered, no-new-privileges, resource-limited and time-limited.
