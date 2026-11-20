@@ -3,69 +3,45 @@
 Updated: 2026-11-19
 
 ## Repository state
-- Repository: `mauricio-gamedev/Ia-localfix`
-- Active development branch: `feat/local-ai-api-foundation`
-- Pull request: #1 (draft), targeting `main`
-- Package/API version: 0.7.0
-- Base stack: Python 3.12, FastAPI, Pydantic, HTTPX, SQLite/FTS5, Ollama
-- CI workflow: `.github/workflows/ci.yml`
 
-## Implemented
-- Project creation and bounded workspace management.
-- Ollama planning and schema-constrained source generation.
-- Persistent SQLite memory with FTS5 and LIKE fallback.
-- Agent runs persisted with approval/rejection states and an audit event timeline.
-- Bounded text-only workspace inspection with SHA-256 fingerprints and exclusions for symlinks, common build/cache/VCS directories, environment files and key material.
-- Agent proposals can create files or update inspected text files; updates are rejected if their expected SHA-256 no longer matches.
-- Approved file changes are followed by non-executing syntax/format checks for Python, JSON, TOML and XML.
-- A repair endpoint can generate a new proposal based on static diagnostics; the repair still requires explicit approval.
-- v0.5 CI passed on branch head `f245e8a` with 31 tests. v0.6 adds a live Docker smoke job to GitHub Actions in addition to its unit/API suite.
+- Repository: mauricio-gamedev/Ia-localfix
+- Active branch: feat/local-ai-api-foundation
+- Pull request: #1, draft and open; do not merge without explicit user approval.
+- Legacy backend: Python 3.12 / FastAPI / SQLite / Ollama / Docker (retained, optional).
+- Android app target: phone-local Intelligent Access Point; no external API dependency.
+- Android runtime: Kotlin + Jetpack Compose + LiteRT-LM CPU backend.
+- Starter model: Qwen3-0.6B LiteRT-LM, approximately 614 MB.
 
-- Added a persisted build-job state machine, fixed server-side profile registry, build event timeline, Docker execution adapter, and APK/AAB artifact manifest/download endpoint.
-- Build jobs require explicit approval and use a scratch copy; only that copy is mounted into the container. The container is network-disabled, image pulls are disabled, non-root, read-only except scratch mounts, capability-dropped, seccomp-filtered, no-new-privileges, resource-limited and time-limited.
-- Android Gradle profiles require IA_ANDROID_BUILDER_IMAGE configured server-side; it must include the Android SDK and preloaded offline dependencies.
-- The API does not execute generated code after file approval; project builds run only as separately approved build jobs.
-- Build outputs are parsed into structured Python, Node TAP, Gradle compiler/task, generic failure and timeout diagnostics.
-- Added `POST /v1/builds/{build_id}/repair`: it creates one normal agent-run patch proposal from the failed build and current workspace snapshot; no files change until that run is approved.
-- Build jobs track `cycle_id`, `iteration` and `parent_build_id`. A retry requires the linked repair proposal to be applied, the same build profile, a failed parent, and no existing child. `IA_MAX_REPAIR_ITERATIONS` defaults to 2 and is limited to 1–5.
-- Each repair and subsequent build requires a separate explicit approval; rejected or failed steps do not continue automatically.
-- GitHub Actions live Docker smoke test now launches a real container with a controlled unittest fixture and verifies successful test execution and scratch cleanup.
+## Android on-device work implemented in source
 
-## Current API additions
-- `GET /v1/projects/{project_id}/inspect`
-- `POST /v1/projects/{project_id}/validate`
-- `POST /v1/agent/runs/{run_id}/repair`
-- `GET /v1/projects/{project_id}/build-profiles`
-- `POST /v1/projects/{project_id}/builds`
-- `GET /v1/projects/{project_id}/builds`
-- `GET /v1/builds/{build_id}` and `/events`
-- `POST /v1/builds/{build_id}/repair`
-- `POST /v1/builds/{build_id}/approve` and `/reject`
-- `GET /v1/builds/{build_id}/artifacts/{artifact_name}`
+- Replaced remote API client UI direction with local chat, projects and device/model setup.
+- Added application-scoped LiteRT-LM engine adapter on a dedicated single-thread dispatcher.
+- Added first-run HTTPS model downloader, temporary-file staging, size bounds and pinned SHA-256 verification.
+- Added private SQLite tables for projects, chat messages, explicit memory notes and pending proposals.
+- Added private per-project file workspace, bounded JSON file proposals, safe relative path validation, path/symlink/secret-path checks, no-overwrite behavior, rollback on partial file application and ZIP export.
+- Added explicit user approval/rejection for generated files.
+- Added memory command: remember: ...
+- Removed the need for API Base URL, bearer token, PC, router, VPS, Ollama server or remote service in Android runtime.
+- Added model unload control and critical-memory trimming.
+- Added JVM tests for proposal path policy.
+- Upgraded Android build toolchain to AGP 8.13.2 / Kotlin 2.3.21 / Gradle 8.13 and added LiteRT-LM Android 0.19.1 dependency.
+- CI now runs Android JVM unit tests and builds the debug APK.
 
-Existing agent run endpoints remain documented in the README.
+## Current Android limitations
 
-## v0.7 additions
-- Optional bearer-token authentication protects every API endpoint except /health when IA_API_TOKEN is configured. The docs and OpenAPI schema remain readable, with protected operations marked for Bearer authorization in Swagger UI. Tokens require at least 32 ASCII non-whitespace characters and are checked with constant-time comparison.
-- IA_ALLOW_REMOTE=true requires a valid token at startup as an explicit deployment guard. It does not detect the actual Uvicorn bind address or provide TLS; remote ingress still needs separate network/TLS hardening.
-- Build result summaries are normalized for Python unittest, Node TAP and Gradle JUnit XML. Parsing is bounded to at most 50 report candidates of at most 512 KB each. Missing/unparseable reports remain null and are not treated as success.
+- The selected 0.6B model is intentionally small. It is not a desktop-grade coding model; code quality, speed and stability on a Galaxy A06 remain subject to real-device testing.
+- Model download requires internet once (approximately 614 MB); subsequent model inference is on-device/offline.
+- The app does not bundle Android SDK/Gradle and does not build arbitrary APKs on the phone.
+- File proposal workflow currently creates new files only; editing existing files, deleting project files, running tests/builds, tool orchestration, semantic vector retrieval and memory summarization are not implemented yet.
+- The model output schema can fail; malformed or unsafe proposals are rejected and not written.
+- CI compilation/unit tests cannot prove physical-device inference speed, RAM/thermal behavior or app lifecycle stability.
 
-## Android client MVP 0.1.0
-- Added a Kotlin/Jetpack Compose Android client under `android/` with dark chat, project list/create, proposal review, explicit approve/reject and API settings.
-- Added a configurable API base URL for trusted-LAN/HTTPS use. The optional bearer token is encrypted at rest using Android Keystore AES-GCM and SharedPreferences stores only the ciphertext/IV.
-- Added Android debug-only cleartext HTTP allowance for trusted-LAN testing; main/release manifest keeps cleartext disabled.
-- Added `android-apk` GitHub Actions job to assemble a debug APK and upload the APK plus SHA-256 checksum as a 14-day artifact. Build result is not yet confirmed at this checkpoint; wait for exact-head CI.
+## Legacy backend status
 
-## Not implemented yet
-- No actual Android APK build has yet been confirmed for the latest Android client commit; the new `android-apk` CI job is the release gate.
-- Publication of the Android SDK builder image and dependency-cache provisioning for backend-side Android project builds.
-- Additional parsers for toolchains beyond Python/Node/Gradle and richer test-report extraction.
-- Unattended multi-tool autonomy; repair cycles are intentionally supervised with per-change and per-build approvals.
-- Advanced memory ranking, summarization/compaction and retention controls.
-- Fine-grained project authorization, rate limiting and a durable multi-worker build queue.
-- Stronger VM/microVM execution isolation and TLS/reverse-proxy deployment automation.
+The existing FastAPI/Ollama/Docker API, guarded workspaces, persistent server SQLite memory, approval state machine, fixed build profiles and build diagnostics remain in the repository as a separate optional subsystem. It is not called by the Android app. The backend's previous host deployment instructions are not applicable to phone-local app usage.
 
-## Important constraints
-- Do not execute model-generated shell commands.
-- Do not claim source projects were built or tests executed unless an approved build job and Docker worker actually completed. Static parsing remains separate from build execution.
-- Keep changes on a feature branch; do not merge the draft PR without reviewing the complete diff and confirming CI.
+## Validation policy
+
+- Never claim device inference was tested on the Galaxy A06 unless it was run on that physical device.
+- Never claim generated project files were compiled or tested unless an actual approved build/test ran.
+- Keep development on feature branches and update the PR; do not merge it.
