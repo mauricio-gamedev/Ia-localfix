@@ -6,7 +6,8 @@ The Android app is the actual runtime host. It runs a compact LiteRT-LM language
 
 - Kotlin + Jetpack Compose; min SDK 26, compile/target SDK 35, JDK 17.
 - LiteRT-LM Android runtime 0.19.1, CPU backend.
-- Starter model: Qwen3-0.6B LiteRT-LM, approximately 614 MB.
+- Starter model: Qwen3-0.6B dynamic INT4 LiteRT-LM, approximately 328 MiB (344,686,592 bytes).
+- Engine context/KV budget is capped at 2,048 tokens and generated output at 512 tokens; recent chat and memory are truncated before prompt construction.
 - The APK does not bundle the model. The app downloads it directly over HTTPS on first setup, streams to a temporary file, checks the expected size and SHA-256 digest, then moves the verified model into private app storage.
 - Once the model is downloaded, chat and generation run offline on the phone. Internet is only required for the initial model download and later app updates.
 
@@ -24,7 +25,7 @@ The app does not execute generated code, run arbitrary shell commands, compile a
 
 ## Model and device limits
 
-Qwen3-0.6B is a deliberately small starting model for a 4 GB phone. Expect slower responses, limited reasoning depth and occasional malformed/incomplete code compared with a desktop coding model. Longer prompts and large project trees must be kept bounded. Close other memory-heavy apps before loading the model. The device must have at least 850 MB free internal storage for the model download; more free space and RAM are preferable.
+Qwen3-0.6B dynamic INT4 is a deliberately small starting model for a 4 GB phone. The publisher marks this 328 MiB variant as recommended; its runtime memory use is much higher than file size and varies by device. This is a memory-conscious starting profile, not a guarantee of fit. Expect slower responses, limited reasoning depth and occasional malformed/incomplete code compared with a desktop coding model. Longer prompts and large project trees must be kept bounded. Close other memory-heavy apps before loading the model. The device must have at least 500 MB free internal storage for the model download; more free space and RAM are preferable.
 
 Model card: https://huggingface.co/litert-community/Qwen3-0.6B
 

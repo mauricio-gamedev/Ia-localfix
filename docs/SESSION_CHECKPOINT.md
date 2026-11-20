@@ -10,7 +10,7 @@ Updated: 2026-11-19
 - Legacy backend: Python 3.12 / FastAPI / SQLite / Ollama / Docker (retained, optional).
 - Android app target: phone-local Intelligent Access Point; no external API dependency.
 - Android runtime: Kotlin + Jetpack Compose + LiteRT-LM CPU backend.
-- Starter model: Qwen3-0.6B LiteRT-LM, approximately 614 MB.
+- Starter model: Qwen3-0.6B dynamic INT4 LiteRT-LM, approximately 328 MiB; CPU backend, 2,048-token engine context and 512-token output cap.
 
 ## Android on-device work implemented in source
 
@@ -29,8 +29,8 @@ Updated: 2026-11-19
 
 ## Current Android limitations
 
-- The selected 0.6B model is intentionally small. It is not a desktop-grade coding model; code quality, speed and stability on a Galaxy A06 remain subject to real-device testing.
-- Model download requires internet once (approximately 614 MB); subsequent model inference is on-device/offline.
+- The selected 0.6B dynamic-INT4 model is intentionally small. It is not a desktop-grade coding model; code quality, speed and stability on a Galaxy A06 remain subject to real-device testing.
+- Model download requires internet once (approximately 328 MiB); subsequent model inference is on-device/offline. Runtime RAM usage is much higher than model file size and needs physical Galaxy A06 verification.
 - The app does not bundle Android SDK/Gradle and does not build arbitrary APKs on the phone.
 - File proposal workflow currently creates new files only; editing existing files, deleting project files, running tests/builds, tool orchestration, semantic vector retrieval and memory summarization are not implemented yet.
 - The model output schema can fail; malformed or unsafe proposals are rejected and not written.

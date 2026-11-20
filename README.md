@@ -6,7 +6,7 @@ Local-first AI software engineering agent. The Android app is designed as a self
 
 - Native Kotlin + Jetpack Compose application under android/.
 - Google LiteRT-LM 0.19.1 with a CPU inference backend.
-- Qwen3-0.6B LiteRT-LM starter model (approximately 614 MB), downloaded and integrity-checked on first setup; model files remain outside the APK in private app storage.
+- Qwen3-0.6B dynamic INT4 LiteRT-LM starter model (approximately 328 MiB), downloaded and integrity-checked on first setup; model files remain outside the APK in private app storage.
 - SQLite project store for projects, chat history, saved project notes and pending proposals.
 - Private project workspaces with validated relative paths, secret-path exclusions and explicit proposal approval.
 - ZIP export through Android's document picker.
@@ -16,7 +16,7 @@ After the model is downloaded, normal inference is performed locally and can wor
 
 ## Hardware expectations
 
-The starter model is intentionally small for a low-memory Android phone. It is not equivalent to a desktop coding model. On the Galaxy A06 class of device, generation may be slow, context and code-output sizes are limited, and other apps may be evicted under RAM pressure. Performance and thermal behavior still need physical-device validation. The app does not bundle Android SDK/Gradle and does not compile arbitrary APKs on-device.
+The dynamic-INT4 starter model reduces model file size; the engine is capped at a 2,048-token context and 512 output tokens for the low-memory Android target. It is not equivalent to a desktop coding model. On the Galaxy A06 class of device, generation may be slow, context and code-output sizes are limited, and other apps may be evicted under RAM pressure. Performance and thermal behavior still need physical-device validation. The app does not bundle Android SDK/Gradle and does not compile arbitrary APKs on-device.
 
 ## Current Android capabilities
 

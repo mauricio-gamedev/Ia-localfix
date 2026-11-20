@@ -17,13 +17,13 @@ The original Python/FastAPI control plane remains in the repository as an option
 
 ## On-device inference
 
-The first model profile is Qwen3-0.6B in LiteRT-LM format. The model is intentionally not packaged in the APK: it is downloaded on first setup and stored under app-private files. The expected published SHA-256 is pinned in the model catalog. A failed/incomplete download is discarded. The first runtime uses CPU for predictable compatibility; GPU/accelerator backends are deferred until physical-device profiling.
+The first model profile is Qwen3-0.6B dynamic INT4 (block-32 weights, float KV) in LiteRT-LM format, approximately 328 MiB. The model is intentionally not packaged in the APK: it is downloaded on first setup and stored under app-private files. The expected SHA-256 is pinned in the model catalog. A failed/incomplete download is discarded. The first runtime uses CPU for predictable compatibility; GPU/accelerator backends are deferred until physical-device profiling. Engine KV/context is capped at 2,048 tokens, output at 512 tokens, recent history at four messages, and memory notes are truncated before prompt construction.
 
 Engine initialization and inference run on a dedicated single-thread dispatcher, never the main/UI thread. One engine instance is owned by the application process, calls are serialized, each conversation is closed after generation, and the engine is unloaded when requested or when Android reports critical memory pressure. If initialization fails, the engine instance is not retained.
 
 ## Hardware envelope
 
-The target phone class has 4 GB physical RAM. The 0.6B model is a realistic first experiment, not a claim of desktop-class reasoning. Runtime memory includes model weights, native runtime, KV cache, prompt, output buffers and the rest of Android. Context and file generation are therefore bounded, generation may be slow, and the OS may reclaim the app. Physical Galaxy A06 tests are required before describing runtime performance or stability as verified. The app does not embed Android SDK/Gradle or compile arbitrary APKs on-device.
+The target phone class has 4 GB physical RAM. The 0.6B dynamic-INT4 model is a more memory-conscious first experiment, not a claim of desktop-class reasoning. The publisher documents the 328 MiB model file and reports runtime memory footprints around 1.9–2.1 GiB on other Android devices; physical Galaxy A06 validation remains mandatory because model file size is not full runtime RAM use. Runtime memory includes model weights, native runtime, KV cache, prompt, output buffers and the rest of Android. Context and file generation are therefore bounded, generation may be slow, and the OS may reclaim the app. Physical Galaxy A06 tests are required before describing runtime performance or stability as verified. The app does not embed Android SDK/Gradle or compile arbitrary APKs on-device.
 
 ## Local data and memory
 

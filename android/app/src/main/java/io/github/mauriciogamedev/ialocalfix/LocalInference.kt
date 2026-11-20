@@ -8,6 +8,7 @@ import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.SamplerConfig
+import com.google.ai.edge.litertlm.ThinkingConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -58,7 +59,12 @@ class LocalInference(context: Context) {
                 val modelFile = File(modelPath)
                 require(modelFile.isFile && modelFile.length() > 0L) { "The on-device model file is missing or empty." }
                 val candidate = Engine(
-                    EngineConfig(modelPath = modelFile.absolutePath, backend = Backend.CPU(), cacheDir = appContext.cacheDir.absolutePath)
+                    EngineConfig(
+                        modelPath = modelFile.absolutePath,
+                        backend = Backend.CPU(),
+                        maxNumTokens = 2048,
+                        cacheDir = appContext.cacheDir.absolutePath
+                    )
                 )
                 // Do not retain or close a candidate if initialize() throws.
                 candidate.initialize()
@@ -75,8 +81,9 @@ class LocalInference(context: Context) {
         withContext(dispatcher) {
             mutex.withLock {
                 val currentEngine = engine ?: throw IllegalStateException("Load the on-device model in Settings before using local AI.")
-                val initialMessages = history.takeLast(8).dropWhile { it.role != "user" }.map { message ->
-                    if (message.role == "assistant") Message.model(message.content) else Message.user(message.content)
+                val initialMessages = history.takeLast(4).dropWhile { it.role != "user" }.map { message ->
+                    val boundedContent = message.content.take(700)
+                    if (message.role == "assistant") Message.model(boundedContent) else Message.user(boundedContent)
                 }.ifEmpty {
                     // Qwen3's chat template expects at least one completed turn in its prefill.
                     listOf(Message.user("Start a new local session."), Message.model("Ready."))
@@ -85,7 +92,9 @@ class LocalInference(context: Context) {
                     ConversationConfig(
                         systemInstruction = Contents.of(systemInstruction),
                         initialMessages = initialMessages,
-                        samplerConfig = SamplerConfig(topK = 20, topP = 0.85, temperature = 0.35)
+                        samplerConfig = SamplerConfig(topK = 20, topP = 0.85, temperature = 0.35),
+                        maxOutputToken = 512,
+                        thinkingConfig = ThinkingConfig(enableThinking = false)
                     )
                 )
                 try {
