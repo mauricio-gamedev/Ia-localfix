@@ -1,0 +1,1097 @@
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from app.config import Settings
+from app.main import create_app
+
+
+def make_client(tmp_path: Path, *, api_token: str = '', allow_remote: bool = False) -> TestClient:
+    settings = Settings(
+        database_path=tmp_path / "db" / "test.sqlite3",
+        workspace_root=tmp_path / "workspaces",
+        ollama_base_url="http://127.0.0.1:9",
+        ollama_model="test-model",
+        api_token=api_token,
+        allow_remote=allow_remote,
+    )
+    return TestClient(create_app(settings))
+
+
+def test_health(tmp_path):
+    with make_client(tmp_path) as client:
+        response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+def test_create_and_list_project(tmp_path):
+    with make_client(tmp_path) as client:
+        created = client.post("/v1/projects", json={"name": "My Android App"})
+        assert created.status_code == 201
+        project = created.json()
+        assert project["slug"] == "my-android-app"
+        assert (tmp_path / "workspaces" / "my-android-app").is_dir()
+
+        listed = client.get("/v1/projects")
+        assert listed.status_code == 200
+        assert listed.json()[0]["id"] == project["id"]
+
+
+def test_duplicate_project_is_conflict(tmp_path):
+    with make_client(tmp_path) as client:
+        assert client.post("/v1/projects", json={"name": "Demo App"}).status_code == 201
+        response = client.post("/v1/projects", json={"name": "Demo App"})
+    assert response.status_code == 409
+
+
+def test_memory_create_and_search(tmp_path):
+    with make_client(tmp_path) as client:
+        saved = client.post("/v1/memory", json={"content": "Use Kotlin and Jetpack Compose"})
+        assert saved.status_code == 201
+        response = client.get("/v1/memory", params={"q": "Kotlin"})
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+    assert "Kotlin" in response.json()[0]["content"]
+
+
+def test_memory_rejects_unknown_project(tmp_path):
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/v1/memory",
+            json={"content": "orphan note", "project_id": "missing-project"},
+        )
+    assert response.status_code == 404
+
+
+def test_plan_returns_service_unavailable_without_runtime(tmp_path):
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/v1/agent/plan",
+            json={"request": "Create a small Android application"},
+        )
+    assert response.status_code == 503
+
+
+def test_generate_writes_files_only_inside_workspace(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_generate(*_args):
+        return [{"path": "src/main.py", "content": "print('hello')\n"}]
+
+    monkeypatch.setattr(app.main, "generate_project_files", fake_generate)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Generator Test"}).json()
+        response = client.post(
+            "/v1/agent/generate",
+            json={"project_id": project["id"], "request": "Create a tiny Python app"},
+        )
+    assert response.status_code == 200
+    assert response.json()["files"][0]["path"] == "src/main.py"
+    assert (tmp_path / "workspaces" / "generator-test" / "src" / "main.py").read_text() == "print('hello')\n"
+
+
+def test_generate_rejects_path_traversal_and_writes_nothing(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_generate(*_args):
+        return [{"path": "../outside.txt", "content": "unsafe"}]
+
+    monkeypatch.setattr(app.main, "generate_project_files", fake_generate)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Traversal Test"}).json()
+        response = client.post(
+            "/v1/agent/generate",
+            json={"project_id": project["id"], "request": "Create a tiny Python app"},
+        )
+    assert response.status_code == 422
+    assert not (tmp_path / "workspaces" / "outside.txt").exists()
+
+
+def test_generate_never_overwrites_existing_file(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_generate(*_args):
+        return [{"path": "README.md", "content": "replace"}]
+
+    monkeypatch.setattr(app.main, "generate_project_files", fake_generate)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "No Overwrite"}).json()
+        target = tmp_path / "workspaces" / "no-overwrite" / "README.md"
+        target.write_text("original")
+        response = client.post(
+            "/v1/agent/generate",
+            json={"project_id": project["id"], "request": "Create a tiny Python app"},
+        )
+    assert response.status_code == 409
+    assert target.read_text() == "original"
+
+
+def _agent_proposal(path="src/main.py", content="print('agent output')\\n"):
+    return {
+        "summary": "Create a minimal Python project.",
+        "plan": "Create the entry point and validate its contents.",
+        "steps": [
+            {
+                "title": "Create the entry point",
+                "description": "Add the requested Python source file.",
+            },
+            {
+                "title": "Review the generated output",
+                "description": "Inspect the file before running any build or test tools.",
+            },
+        ],
+        "files": [{"path": path, "content": content}],
+    }
+
+
+def test_agent_run_waits_for_approval_and_records_events(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_proposal(*_args):
+        return _agent_proposal()
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Agent Workflow"}).json()
+        response = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Create a minimal Python project"},
+        )
+        assert response.status_code == 201
+        run = response.json()
+        assert run["status"] == "awaiting_approval"
+        assert run["files"][0]["path"] == "src/main.py"
+        assert not (tmp_path / "workspaces" / "agent-workflow" / "src" / "main.py").exists()
+
+        events = client.get(f"/v1/agent/runs/{run['id']}/events")
+        assert events.status_code == 200
+        assert [event["event_type"] for event in events.json()] == [
+            "proposal_created",
+            "awaiting_approval",
+        ]
+
+
+def test_agent_approval_applies_files_once(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_proposal(*_args):
+        return _agent_proposal()
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Approved Agent"}).json()
+        run = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Create a minimal Python project"},
+        ).json()
+
+        approved = client.post(f"/v1/agent/runs/{run['id']}/approve")
+        assert approved.status_code == 200
+        assert approved.json()["status"] == "completed"
+        target = tmp_path / "workspaces" / "approved-agent" / "src" / "main.py"
+        assert target.read_text() == "print('agent output')\\n"
+
+        duplicate = client.post(f"/v1/agent/runs/{run['id']}/approve")
+        assert duplicate.status_code == 409
+
+        events = client.get(f"/v1/agent/runs/{run['id']}/events").json()
+        assert events[-1]["event_type"] == "files_applied"
+
+
+def test_agent_rejection_never_writes_files(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_proposal(*_args):
+        return _agent_proposal()
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Rejected Agent"}).json()
+        run = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Create a minimal Python project"},
+        ).json()
+
+        rejected = client.post(
+            f"/v1/agent/runs/{run['id']}/reject",
+            json={"reason": "Review requested changes first."},
+        )
+        assert rejected.status_code == 200
+        assert rejected.json()["status"] == "rejected"
+        assert not (tmp_path / "workspaces" / "rejected-agent" / "src" / "main.py").exists()
+        assert client.post(f"/v1/agent/runs/{run['id']}/approve").status_code == 409
+
+
+def test_agent_rejects_path_traversal_before_persisting_run(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_proposal(*_args):
+        return _agent_proposal(path="../outside.txt", content="unsafe")
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Unsafe Proposal"}).json()
+        response = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Create a minimal Python project"},
+        )
+        assert response.status_code == 422
+        assert client.get("/v1/agent/runs", params={"project_id": project["id"]}).json() == []
+
+
+def test_agent_proposal_receives_recent_project_memory(tmp_path, monkeypatch):
+    import app.main
+
+    captured = {}
+
+    async def fake_proposal(_base_url, _model, _request, project_context):
+        captured.update(project_context)
+        return _agent_proposal()
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Memory Context"}).json()
+        saved = client.post(
+            "/v1/memory",
+            json={"project_id": project["id"], "content": "Use Kotlin and Compose."},
+        )
+        assert saved.status_code == 201
+        created = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Create a minimal project"},
+        )
+        assert created.status_code == 201
+
+    assert captured["project_name"] == "Memory Context"
+    assert captured["recent_project_memory"] == ["Use Kotlin and Compose."]
+
+
+def test_interrupted_agent_run_is_marked_failed_on_restart(tmp_path, monkeypatch):
+    import app.main
+    from app.database import connect
+
+    async def fake_proposal(*_args):
+        return _agent_proposal()
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Interrupted Run"}).json()
+        run = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Create a minimal project"},
+        ).json()
+
+    db_path = tmp_path / "db" / "test.sqlite3"
+    with connect(db_path) as db:
+        db.execute(
+            "UPDATE agent_runs SET status = 'applying' WHERE id = ?",
+            (run["id"],),
+        )
+
+    with make_client(tmp_path) as restarted_client:
+        inspected = restarted_client.get(f"/v1/agent/runs/{run['id']}")
+        assert inspected.status_code == 200
+        assert inspected.json()["status"] == "failed"
+        events = restarted_client.get(f"/v1/agent/runs/{run['id']}/events").json()
+
+    assert events[-1]["event_type"] == "application_interrupted"
+
+
+def test_project_inspection_lists_text_files_but_not_secrets_or_build_dirs(tmp_path):
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Inspect Project"}).json()
+        root = tmp_path / "workspaces" / "inspect-project"
+        (root / "src").mkdir()
+        (root / "src" / "main.py").write_text("print('hello')\\n")
+        (root / ".env").write_text("API_TOKEN=must-not-leak")
+        (root / "node_modules").mkdir()
+        (root / "node_modules" / "ignored.js").write_text("ignored")
+        (root / ".github" / "workflows").mkdir(parents=True)
+        (root / ".github" / "workflows" / "ci.yml").write_text("name: CI\\n")
+
+        response = client.get(f"/v1/projects/{project['id']}/inspect")
+
+    assert response.status_code == 200
+    paths = {item["path"] for item in response.json()["files"]}
+    assert "src/main.py" in paths
+    assert ".github/workflows/ci.yml" in paths
+    assert ".env" not in paths
+    assert "node_modules/ignored.js" not in paths
+    assert "must-not-leak" not in response.text
+
+
+def test_agent_can_update_an_inspected_file_after_approval(tmp_path, monkeypatch):
+    import hashlib
+    import app.main
+
+    async def fake_proposal(*_args):
+        original = b"print('old')\\n"
+        return {
+            "summary": "Update the entry point.",
+            "plan": "Replace the greeting while preserving the project structure.",
+            "steps": [
+                {"title": "Update entry point", "description": "Change the greeting."}
+            ],
+            "files": [
+                {
+                    "path": "main.py",
+                    "content": "print('new')\\n",
+                    "operation": "update",
+                    "expected_sha256": hashlib.sha256(original).hexdigest(),
+                }
+            ],
+        }
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Update Agent"}).json()
+        target = tmp_path / "workspaces" / "update-agent" / "main.py"
+        target.write_bytes(b"print('old')\\n")
+        run_response = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Update the Python greeting"},
+        )
+        assert run_response.status_code == 201
+        run = run_response.json()
+        assert run["files"][0]["operation"] == "update"
+        assert target.read_bytes() == b"print('old')\\n"
+
+        approved = client.post(f"/v1/agent/runs/{run['id']}/approve")
+
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "completed"
+    assert target.read_bytes() == b"print('new')\\n"
+
+
+def test_agent_refuses_stale_update_if_file_changes_after_proposal(tmp_path, monkeypatch):
+    import hashlib
+    import app.main
+
+    original = b"VALUE = 1\\n"
+
+    async def fake_proposal(*_args):
+        return {
+            "summary": "Update an existing module.",
+            "plan": "Change the constant.",
+            "steps": [
+                {"title": "Update module", "description": "Change the constant safely."}
+            ],
+            "files": [
+                {
+                    "path": "module.py",
+                    "content": "VALUE = 2\\n",
+                    "operation": "update",
+                    "expected_sha256": hashlib.sha256(original).hexdigest(),
+                }
+            ],
+        }
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Stale Update"}).json()
+        target = tmp_path / "workspaces" / "stale-update" / "module.py"
+        target.write_bytes(original)
+        run = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Update the module constant"},
+        ).json()
+        target.write_bytes(b"VALUE = 99\\n")
+
+        response = client.post(f"/v1/agent/runs/{run['id']}/approve")
+        state = client.get(f"/v1/agent/runs/{run['id']}")
+
+    assert response.status_code == 422
+    assert state.json()["status"] == "failed"
+    assert target.read_bytes() == b"VALUE = 99\\n"
+
+
+def test_static_validation_reports_syntax_errors_without_executing_code(tmp_path):
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Static Validation"}).json()
+        root = tmp_path / "workspaces" / "static-validation"
+        (root / "bad.py").write_text("def broken(:\n    pass\n")
+        (root / "package.json").write_text('{"name": "missing brace"')
+        (root / "safe.py").write_text("raise RuntimeError('must not execute')\n")
+
+        response = client.post(f"/v1/projects/{project['id']}/validate")
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["success"] is False
+    assert result["execution_performed"] is False
+    assert result["checked_files"] == 3
+    assert result["error_count"] == 2
+    assert {item["path"] for item in result["diagnostics"]} == {"bad.py", "package.json"}
+
+
+def test_agent_approval_records_static_validation_result(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_proposal(*_args):
+        return {
+            "summary": "Create a valid Python module.",
+            "plan": "Add a syntactically valid module.",
+            "steps": [
+                {"title": "Create module", "description": "Add a module with valid syntax."}
+            ],
+            "files": [{"path": "module.py", "content": "value = 42" + chr(10)}],
+        }
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Validated Agent"}).json()
+        run = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Create a valid Python module"},
+        ).json()
+        approved = client.post(f"/v1/agent/runs/{run['id']}/approve")
+        events = client.get(f"/v1/agent/runs/{run['id']}/events").json()
+
+    assert approved.status_code == 200
+    validation_event = next(e for e in events if e["event_type"] == "static_validation_completed")
+    assert validation_event["payload"]["success"] is True
+    assert validation_event["payload"]["execution_performed"] is False
+    assert events[-1]["event_type"] == "files_applied"
+
+
+def test_agent_can_create_repair_proposal_from_static_diagnostics(tmp_path, monkeypatch):
+    import hashlib
+    import app.main
+
+    broken_content = "def broken(" + chr(10) + "    pass" + chr(10)
+
+    async def initial_proposal(*_args):
+        return {
+            "summary": "Create a module with a syntax issue.",
+            "plan": "Create the module so its syntax can be checked.",
+            "steps": [
+                {"title": "Create module", "description": "Add the module before validation."}
+            ],
+            "files": [{"path": "broken.py", "content": broken_content}],
+        }
+
+    captured = {}
+
+    async def repair_proposal(_base_url, _model, request, project_context):
+        captured["request"] = request
+        captured["context"] = project_context
+        current = (tmp_path / "workspaces" / "repair-loop" / "broken.py").read_bytes()
+        return {
+            "summary": "Repair the Python syntax error.",
+            "plan": "Replace the invalid function declaration with a valid function.",
+            "steps": [
+                {"title": "Fix declaration", "description": "Use a valid function signature."}
+            ],
+            "files": [
+                {
+                    "path": "broken.py",
+                    "content": "def fixed():" + chr(10) + "    return True" + chr(10),
+                    "operation": "update",
+                    "expected_sha256": hashlib.sha256(current).hexdigest(),
+                }
+            ],
+        }
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", initial_proposal)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Repair Loop"}).json()
+        first = client.post(
+            "/v1/agent/runs",
+            json={"project_id": project["id"], "request": "Create a Python module"},
+        ).json()
+        applied = client.post(f"/v1/agent/runs/{first['id']}/approve")
+        assert applied.status_code == 200
+        diagnostics = client.post(f"/v1/projects/{project['id']}/validate").json()
+        assert diagnostics["error_count"] == 1
+
+        monkeypatch.setattr(app.main, "generate_agent_proposal", repair_proposal)
+        repair = client.post(
+            f"/v1/agent/runs/{first['id']}/repair",
+            json={"instructions": "Keep the function small."},
+        )
+        assert repair.status_code == 201
+        repair_run = repair.json()
+        assert repair_run["status"] == "awaiting_approval"
+        assert repair_run["files"][0]["operation"] == "update"
+        assert captured["context"]["static_validation"]["error_count"] == 1
+        assert captured["context"]["static_validation"]["diagnostics"][0]["path"] == "broken.py"
+        assert "Keep the function small." in captured["request"]
+
+        approved = client.post(f"/v1/agent/runs/{repair_run['id']}/approve")
+        validation = client.post(f"/v1/projects/{project['id']}/validate")
+
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "completed"
+    assert validation.status_code == 200
+    assert validation.json()["success"] is True
+    repaired = (tmp_path / "workspaces" / "repair-loop" / "broken.py").read_text()
+    assert repaired == "def fixed():" + chr(10) + "    return True" + chr(10)
+
+
+def test_build_profiles_detect_available_toolchains_and_gate_android_image(tmp_path):
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Build Profiles"}).json()
+        root = tmp_path / "workspaces" / "build-profiles"
+        (root / "src").mkdir()
+        (root / "src" / "main.py").write_text("def main(): return 0\n")
+        (root / "tests").mkdir()
+        (root / "tests" / "__init__.py").write_text("")
+        (root / "tests" / "test_smoke.py").write_text("import unittest\n")
+        (root / "tests" / "smoke.test.js").write_text("import test from 'node:test';\n")
+        (root / "package.json").write_text('{"name":"demo","scripts":{"test":"node --test"}}')
+        (root / "gradlew").write_text("#!/bin/sh\nexit 0\n")
+        (root / "build.gradle.kts").write_text("plugins { id(\"com.android.application\") }\n")
+        profiles = client.get(f"/v1/projects/{project['id']}/build-profiles")
+
+    assert profiles.status_code == 200
+    by_id = {item["id"]: item for item in profiles.json()}
+    assert by_id["python-unittest"]["available"] is True
+    assert by_id["node-test"]["available"] is True
+    assert by_id["android-debug"]["available"] is False
+    assert "IA_ANDROID_BUILDER_IMAGE" in by_id["android-debug"]["reason"]
+
+
+def test_build_job_requires_approval_and_is_audited(tmp_path, monkeypatch):
+    import app.main
+
+    def fake_build(_root, _slug, _profile, _settings, _job_id):
+        return {
+            "status": "succeeded",
+            "exit_code": 0,
+            "duration_ms": 12,
+            "log": "2 tests passed",
+            "error": None,
+            "artifacts": [],
+        }
+
+    monkeypatch.setattr(app.main, "execute_build", fake_build)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Build Approval"}).json()
+        (tmp_path / "workspaces" / "build-approval" / "test_demo.py").write_text(
+            "import unittest\nclass Demo(unittest.TestCase):\n def test_ok(self): self.assertTrue(True)\n"
+        )
+        created = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "python-unittest"},
+        )
+        assert created.status_code == 201
+        job = created.json()
+        assert job["status"] == "awaiting_approval"
+
+        events = client.get(f"/v1/builds/{job['id']}/events").json()
+        assert [item["event_type"] for item in events] == [
+            "build_proposed",
+            "awaiting_approval",
+        ]
+
+        approved = client.post(f"/v1/builds/{job['id']}/approve")
+        assert approved.status_code == 200
+        assert approved.json()["status"] == "succeeded"
+        assert approved.json()["result"]["log"] == "2 tests passed"
+        assert client.post(f"/v1/builds/{job['id']}/approve").status_code == 409
+
+
+def test_build_profile_rejects_unavailable_or_unrecognized_profile(tmp_path):
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Build Reject"}).json()
+        unavailable = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "android-debug"},
+        )
+        unknown = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "execute-anything"},
+        )
+
+    assert unavailable.status_code == 422
+    assert unknown.status_code == 422
+
+
+def test_docker_runner_uses_fixed_offline_hardened_argument_vector(tmp_path, monkeypatch):
+    import subprocess
+    from app.builds import execute_build
+
+    root = tmp_path / "workspaces"
+    project = root / "runner-test"
+    project.mkdir(parents=True)
+    (project / "test_demo.py").write_text(
+        "import unittest\nclass Demo(unittest.TestCase):\n def test_ok(self): self.assertTrue(True)\n"
+    )
+    (project / ".env").write_text("SECRET=must-not-be-mounted")
+    settings = Settings(
+        database_path=tmp_path / "db" / "test.sqlite3",
+        workspace_root=root,
+        artifact_root=tmp_path / "artifacts",
+        python_builder_image="python:3.12-slim",
+    )
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        mount = next(item for item in args if item.startswith("type=bind,source="))
+        source = Path(mount.split("source=", 1)[1].split(",target=", 1)[0])
+        assert (source / "test_demo.py").is_file()
+        assert not (source / ".env").exists()
+        return subprocess.CompletedProcess(args, 0, "Ran 1 test\n", "")
+
+    monkeypatch.setattr("app.builds.subprocess.run", fake_run)
+    result = execute_build(root, "runner-test", "python-unittest", settings, "build-123")
+
+    args = captured["args"]
+    assert result["status"] == "succeeded"
+    assert "--network=none" in args
+    assert "--read-only" in args
+    assert "--cap-drop=ALL" in args
+    assert "--security-opt=no-new-privileges" in args
+    import os
+    expected_uid = os.getuid() if os.getuid() != 0 else 10001
+    expected_gid = os.getgid() if os.getuid() != 0 else 10001
+    assert "--user" in args
+    assert args[args.index("--user") + 1] == f"{expected_uid}:{expected_gid}"
+    assert args[-6:] == ["python:3.12-slim", "python", "-m", "unittest", "discover", "-v"]
+    assert captured["kwargs"]["timeout"] == 900
+    assert "shell" not in captured["kwargs"]
+
+
+def test_build_timeout_is_recorded_and_not_retried(tmp_path, monkeypatch):
+    import subprocess
+    from app.builds import execute_build
+
+    root = tmp_path / "workspaces"
+    (root / "timeout-project").mkdir(parents=True)
+    (root / "timeout-project" / "main.py").write_text("pass\n")
+    settings = Settings(
+        database_path=tmp_path / "db" / "test.sqlite3",
+        workspace_root=root,
+        build_timeout_seconds=2,
+    )
+
+    def fake_run(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("docker", 2, output="still running")
+
+    monkeypatch.setattr("app.builds.subprocess.run", fake_run)
+    result = execute_build(root, "timeout-project", "python-unittest", settings, "timeout-1")
+    assert result["status"] == "timed_out"
+    assert result["error"] == "Build exceeded the 2-second timeout."
+    assert result["log"] == "still running"
+
+
+def test_android_wrapper_uses_sh_and_server_configured_image():
+    from app.builds import profile_registry
+    from app.config import Settings
+
+    settings = Settings(android_builder_image="registry.example/android-sdk:35")
+    profiles = profile_registry(settings)
+
+    assert profiles["android-debug"].command[:2] == ("sh", "-c")
+    assert "/opt/ia-gradle-cache" in profiles["android-debug"].command[2]
+    assert profiles["android-unit-tests"].command[2].endswith("testDebugUnitTest")
+
+
+def test_build_job_recovery_marks_running_job_interrupted(tmp_path):
+    from app.database import connect
+
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Interrupted Build"}).json()
+        root = tmp_path / "workspaces" / "interrupted-build"
+        (root / "main.py").write_text("pass\n")
+        (root / "test_main.py").write_text("import unittest\n")
+        job = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "python-unittest"},
+        ).json()
+
+    with connect(tmp_path / "db" / "test.sqlite3") as db:
+        db.execute(
+            "UPDATE build_jobs SET status = 'running' WHERE id = ?",
+            (job["id"],),
+        )
+
+    with make_client(tmp_path) as restarted:
+        inspected = restarted.get(f"/v1/builds/{job['id']}").json()
+        events = restarted.get(f"/v1/builds/{job['id']}/events").json()
+
+    assert inspected["status"] == "failed"
+    assert "interrupted" in inspected["error"].lower()
+    assert events[-1]["event_type"] == "build_interrupted"
+
+
+def test_android_artifact_is_saved_and_downloadable(tmp_path, monkeypatch):
+    import app.main
+
+    def fake_build(_root, _slug, _profile, settings, job_id):
+        artifact_dir = settings.artifact_root / job_id
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / "1-app-debug.apk").write_bytes(b"apk-test-data")
+        return {
+            "status": "succeeded",
+            "exit_code": 0,
+            "duration_ms": 7,
+            "log": "BUILD SUCCESSFUL",
+            "error": None,
+            "artifacts": [{
+                "name": "1-app-debug.apk",
+                "size_bytes": len(b"apk-test-data"),
+                "sha256": "test-hash",
+            }],
+        }
+
+    monkeypatch.setattr(app.main, "execute_build", fake_build)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Artifact Test"}).json()
+        (tmp_path / "workspaces" / "artifact-test" / "src.py").write_text("pass\n")
+        (tmp_path / "workspaces" / "artifact-test" / "test_app.py").write_text("import unittest\n")
+        created = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "python-unittest"},
+        ).json()
+        completed = client.post(f"/v1/builds/{created['id']}/approve")
+        download = client.get(
+            f"/v1/builds/{created['id']}/artifacts/1-app-debug.apk"
+        )
+
+    assert completed.json()["status"] == "succeeded"
+    assert download.status_code == 200
+    assert download.content == b"apk-test-data"
+    assert download.headers["content-type"] == "application/vnd.android.package-archive"
+
+
+def test_build_profiles_do_not_offer_empty_test_runs(tmp_path):
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "No Tests"}).json()
+        root = tmp_path / "workspaces" / "no-tests"
+        (root / "main.py").write_text("def app(): return True\n")
+        (root / "package.json").write_text('{"name":"no-tests"}')
+        (root / "src.js").write_text("export const value = 1;\n")
+
+        response = client.get(f"/v1/projects/{project['id']}/build-profiles")
+
+    by_id = {item["id"]: item for item in response.json()}
+    assert by_id["python-unittest"]["available"] is False
+    assert "test_*.py" in by_id["python-unittest"]["reason"]
+    assert by_id["node-test"]["available"] is False
+
+
+def test_node_profile_requires_discoverable_test_file(tmp_path):
+    from app.builds import get_build_profiles
+    from app.config import Settings
+
+    root = tmp_path / "workspaces"
+    project = root / "node-project"
+    project.mkdir(parents=True)
+    (project / "package.json").write_text('{"name":"node-project"}')
+    (project / "src.js").write_text("export const value = 1;\n")
+    settings = Settings(workspace_root=root)
+
+    before = {item["id"]: item for item in get_build_profiles(root, "node-project", settings)}
+    assert before["node-test"]["available"] is False
+
+    (project / "tests").mkdir()
+    (project / "tests" / "math.test.js").write_text("import test from 'node:test';\n")
+    after = {item["id"]: item for item in get_build_profiles(root, "node-project", settings)}
+    assert after["node-test"]["available"] is True
+
+
+def test_build_diagnostics_parse_python_node_and_gradle_failures():
+    from app.build_diagnostics import parse_build_diagnostics
+
+    python_log = (
+        'Traceback (most recent call last):\n'
+        '  File "/workspace/tests/test_main.py", line 17, in test_value\n'
+        '    self.assertEqual(1, 2)\n'
+        'AssertionError: 1 != 2\n'
+    )
+    python = parse_build_diagnostics("python-unittest", "failed", python_log, 1)
+    assert python[0]["path"] == "tests/test_main.py"
+    assert python[0]["line"] == 17
+    assert "AssertionError" in python[0]["message"]
+
+    node_log = (
+        "not ok 1 - rejects invalid state\n"
+        "  location: 'file:///workspace/tests/state.test.js:12:4'\n"
+        "  error: 'expected state to be valid'\n"
+    )
+    node = parse_build_diagnostics("node-test", "failed", node_log, 1)
+    assert node[0]["path"] == "tests/state.test.js"
+    assert node[0]["line"] == 12
+    assert "expected state" in node[0]["message"]
+
+    gradle_log = (
+        "e: file:///workspace/app/src/main/java/com/example/Main.kt: (22, 9): Unresolved reference: missing\n"
+        "> Task :app:compileDebugKotlin FAILED\n"
+    )
+    gradle = parse_build_diagnostics("android-debug", "failed", gradle_log, 1)
+    assert gradle[0]["category"] == "gradle_compiler"
+    assert gradle[0]["path"] == "app/src/main/java/com/example/Main.kt"
+    assert gradle[0]["line"] == 22
+
+
+def test_build_diagnostics_reject_paths_outside_workspace_and_report_timeout():
+    from app.build_diagnostics import parse_build_diagnostics
+
+    parsed = parse_build_diagnostics(
+        "python-unittest",
+        "failed",
+        'File "/etc/passwd", line 1, in open\nPermissionError: denied\n',
+        1,
+    )
+    assert parsed
+    assert all(item["path"] is None for item in parsed)
+
+    timed_out = parse_build_diagnostics("node-test", "timed_out", "stopped", None)
+    assert timed_out[0]["category"] == "timeout"
+
+
+def test_supervised_build_repair_cycle_is_approved_and_bounded(tmp_path, monkeypatch):
+    import app.main
+
+    async def fake_proposal(_base, _model, _request, context):
+        current = next(item for item in context["existing_files"] if item["path"] == "main.py")
+        version = int(current["content"].split("=")[-1].strip()) + 1
+        return {
+            "summary": "Fix the failing build assertion.",
+            "plan": "Update the affected module using the inspected file hash.",
+            "steps": [{"title": "Update module", "description": "Apply a minimal repair."}],
+            "files": [{
+                "path": "main.py",
+                "content": f"VALUE = {version}\n",
+                "operation": "update",
+                "expected_sha256": current["sha256"],
+            }],
+        }
+
+    def fake_build(_root, _slug, _profile, _settings, _job_id):
+        return {
+            "status": "failed",
+            "exit_code": 1,
+            "duration_ms": 8,
+            "log": "AssertionError: expected repaired build",
+            "error": "Build container exited with status 1.",
+            "artifacts": [],
+            "diagnostics": [{
+                "severity": "error", "category": "python_test_or_runtime",
+                "path": "test_main.py", "line": 5, "column": None,
+                "message": "AssertionError: expected repaired build",
+            }],
+        }
+
+    monkeypatch.setattr(app.main, "generate_agent_proposal", fake_proposal)
+    monkeypatch.setattr(app.main, "execute_build", fake_build)
+
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Repair Cycle"}).json()
+        root = tmp_path / "workspaces" / "repair-cycle"
+        (root / "main.py").write_text("VALUE = 1\n")
+        (root / "test_main.py").write_text(
+            "import unittest\nclass TestValue(unittest.TestCase):\n"
+            "    def test_value(self): self.assertEqual(2, 1)\n"
+        )
+
+        first = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "python-unittest"},
+        ).json()
+        assert first["iteration"] == 0
+        first_failed = client.post(f"/v1/builds/{first['id']}/approve").json()
+        assert first_failed["status"] == "failed"
+        assert first_failed["result"]["diagnostics"][0]["path"] == "test_main.py"
+
+        repair_one = client.post(f"/v1/builds/{first['id']}/repair", json={})
+        assert repair_one.status_code == 201
+        run_one = repair_one.json()
+        assert run_one["status"] == "awaiting_approval"
+
+        premature = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "python-unittest", "parent_build_id": first["id"]},
+        )
+        assert premature.status_code == 409
+
+        approved_one = client.post(f"/v1/agent/runs/{run_one['id']}/approve")
+        assert approved_one.status_code == 200
+        assert (root / "main.py").read_text() == "VALUE = 2\n"
+
+        second = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "python-unittest", "parent_build_id": first["id"]},
+        )
+        assert second.status_code == 201
+        second_job = second.json()
+        assert second_job["iteration"] == 1
+        assert second_job["cycle_id"] == first["cycle_id"]
+        assert second_job["parent_build_id"] == first["id"]
+        client.post(f"/v1/builds/{second_job['id']}/approve")
+
+        repair_two = client.post(f"/v1/builds/{second_job['id']}/repair", json={})
+        assert repair_two.status_code == 201
+        run_two = repair_two.json()
+        assert client.post(f"/v1/agent/runs/{run_two['id']}/approve").status_code == 200
+
+        third = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "python-unittest", "parent_build_id": second_job["id"]},
+        )
+        assert third.status_code == 201
+        third_job = third.json()
+        assert third_job["iteration"] == 2
+        client.post(f"/v1/builds/{third_job['id']}/approve")
+
+        blocked = client.post(f"/v1/builds/{third_job['id']}/repair", json={})
+        assert blocked.status_code == 409
+
+
+def test_v05_build_database_migrates_repair_cycle_columns(tmp_path):
+    import sqlite3
+    from app.database import connect, initialize
+
+    path = tmp_path / "legacy.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            slug TEXT NOT NULL UNIQUE,
+            workspace_path TEXT NOT NULL
+        );
+        INSERT INTO projects (id, name, slug, workspace_path)
+        VALUES ('project-1', 'Legacy', 'legacy', '/tmp/legacy');
+        CREATE TABLE build_jobs (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            profile_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            result_json TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            started_at TEXT,
+            completed_at TEXT
+        );
+        INSERT INTO build_jobs (id, project_id, profile_id, status)
+        VALUES ('build-legacy', 'project-1', 'python-unittest', 'failed');
+        """
+    )
+    connection.close()
+
+    initialize(path)
+    with connect(path) as db:
+        row = db.execute("SELECT * FROM build_jobs WHERE id = 'build-legacy'").fetchone()
+        columns = {item["name"] for item in db.execute("PRAGMA table_info(build_jobs)")}
+
+    assert {"cycle_id", "iteration", "parent_build_id"} <= columns
+    assert row["cycle_id"] == "build-legacy"
+    assert row["iteration"] == 0
+    assert row["parent_build_id"] is None
+
+
+def test_bearer_auth_protects_api_and_docs_but_keeps_health_public(tmp_path):
+    token = "localfix-test-token-" + ("x" * 32)
+    with make_client(tmp_path, api_token=token) as client:
+        assert client.get("/health").status_code == 200
+        assert client.get("/v1/projects").status_code == 401
+        assert client.get("/docs").status_code == 200
+        assert client.get("/redoc").status_code == 200
+        openapi = client.get("/openapi.json")
+        assert openapi.status_code == 200
+        spec = openapi.json()
+        assert spec["paths"]["/v1/projects"]["get"]["security"] == [{"BearerAuth": []}]
+        assert spec["paths"]["/health"]["get"]["security"] == []
+        assert client.get(
+            "/v1/projects",
+            headers={"Authorization": "Bearer incorrect-token"},
+        ).status_code == 401
+
+        authorized = client.get(
+            "/v1/projects",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        docs = client.get("/docs", headers={"Authorization": f"Bearer {token}"})
+
+    assert authorized.status_code == 200
+    assert docs.status_code == 200
+
+
+def test_remote_mode_requires_a_strong_api_token(tmp_path):
+    import pytest
+
+    with pytest.raises(ValueError, match="IA_API_TOKEN is required"):
+        make_client(tmp_path, allow_remote=True)
+
+    with pytest.raises(ValueError, match="at least 32"):
+        make_client(tmp_path, api_token="too-short")
+
+
+def test_test_report_parsers_normalize_python_and_node_results():
+    from app.test_reports import parse_test_report
+
+    python_log = "Ran 4 tests in 0.125s\n\nFAILED (failures=1, errors=1)"
+    python = parse_test_report("python-unittest", "failed", python_log)
+    assert python == {
+        "format": "python-unittest", "total": 4, "passed": 2,
+        "failed": 2, "skipped": 0, "todo": 0, "suites": 1, "duration_ms": 125,
+    }
+
+    successful_python = parse_test_report(
+        "python-unittest", "succeeded", "Ran 1 test in 0.010s" + chr(10) + chr(10) + "OK"
+    )
+    assert successful_python["passed"] == 1
+    assert successful_python["failed"] == 0
+
+    node_log = (
+        "# tests 5\n# pass 3\n# fail 1\n# cancelled 0\n"
+        "# skipped 1\n# todo 0\n# duration_ms 19.4\n"
+    )
+    node = parse_test_report("node-test", "failed", node_log)
+    assert node == {
+        "format": "node-tap", "total": 5, "passed": 3,
+        "failed": 1, "skipped": 1, "todo": 0, "suites": 1, "duration_ms": 19,
+    }
+
+
+def test_test_report_parses_bounded_gradle_junit_xml(tmp_path):
+    from app.test_reports import parse_test_report
+
+    reports = tmp_path / "app" / "build" / "test-results" / "testDebugUnitTest"
+    reports.mkdir(parents=True)
+    (reports / "TEST-com.example.SampleTest.xml").write_text(
+        '<testsuite name="SampleTest" tests="5" failures="1" errors="0" '
+        'skipped="1" time="0.250"></testsuite>'
+    )
+    report = parse_test_report("android-unit-tests", "failed", "", tmp_path)
+    assert report == {
+        "format": "junit-xml", "total": 5, "passed": 3,
+        "failed": 1, "skipped": 1, "todo": 0, "suites": 1, "duration_ms": 250,
+    }
+
+
+def test_successful_build_response_contains_test_report_when_available(tmp_path, monkeypatch):
+    import app.main
+
+    def fake_build(_root, _slug, _profile, _settings, _job_id):
+        return {
+            "status": "succeeded", "exit_code": 0, "duration_ms": 12,
+            "log": "Ran 2 tests in 0.010s\n\nOK", "error": None,
+            "artifacts": [], "diagnostics": [],
+            "test_report": {
+                "format": "python-unittest", "total": 2, "passed": 2,
+                "failed": 0, "skipped": 0, "todo": 0, "suites": 1, "duration_ms": 10,
+            },
+        }
+
+    monkeypatch.setattr(app.main, "execute_build", fake_build)
+    with make_client(tmp_path) as client:
+        project = client.post("/v1/projects", json={"name": "Test Report API"}).json()
+        (tmp_path / "workspaces" / "test-report-api" / "test_demo.py").write_text(
+            "import unittest\nclass Demo(unittest.TestCase):\n def test_ok(self): self.assertTrue(True)\n"
+        )
+        job = client.post(
+            f"/v1/projects/{project['id']}/builds",
+            json={"profile_id": "python-unittest"},
+        ).json()
+        completed = client.post(f"/v1/builds/{job['id']}/approve")
+
+    assert completed.status_code == 200
+    assert completed.json()["result"]["test_report"]["passed"] == 2
