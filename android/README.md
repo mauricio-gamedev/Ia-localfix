@@ -25,7 +25,7 @@ The app does not execute generated code, run arbitrary shell commands, compile a
 
 ## Model and device limits
 
-Qwen3-0.6B dynamic INT4 is a deliberately small starting model for a 4 GB phone. The publisher marks this 328 MiB variant as recommended; its runtime memory use is much higher than file size and varies by device. This is a memory-conscious starting profile, not a guarantee of fit. Expect slower responses, limited reasoning depth and occasional malformed/incomplete code compared with a desktop coding model. Longer prompts and large project trees must be kept bounded. Close other memory-heavy apps before loading the model. The device must have at least 500 MB free internal storage for the model download; more free space and RAM are preferable.
+Qwen3-0.6B dynamic INT4 is a deliberately small starting model for a 4 GB phone. The publisher marks this 328 MiB variant as recommended; its runtime memory use is much higher than file size and varies by device. This is a memory-conscious starting profile, not a guarantee of fit. Expect slower responses, limited reasoning depth and occasional malformed/incomplete code compared with a desktop coding model. Longer prompts and large project trees must be kept bounded. Close other memory-heavy apps before loading the model. The device must have at least 850 MB free internal storage for the model download; more free space and RAM are preferable.
 
 Model card: https://huggingface.co/litert-community/Qwen3-0.6B
 
